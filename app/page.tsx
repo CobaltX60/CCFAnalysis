@@ -41,7 +41,7 @@ export default function Home() {
   const [importResults, setImportResults] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [currentStep, setCurrentStep] = useState<'upload' | 'loading' | 'analysis-variables' | 'analysis' | 'supplier-details' | 'shipto-details' | 'item-details'>('upload');
+  const [currentStep, setCurrentStep] = useState<'upload' | 'loading' | 'analysis-variables' | 'analysis' | 'supplier-details' | 'shipto-details' | 'item-details' | 'transaction-volumes'>('upload');
   const [analysisData, setAnalysisData] = useState<any>(null);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
   
@@ -65,8 +65,39 @@ export default function Home() {
   const [shipToAnalysisShipToFilter, setShipToAnalysisShipToFilter] = useState<string>('');
   const [filteredShipToData, setFilteredShipToData] = useState<any[]>([]);
   
+  // Transaction Volumes Analysis state
+  const [transactionVolumesData, setTransactionVolumesData] = useState<any[]>([]);
+  const [transactionVolumesSummary, setTransactionVolumesSummary] = useState<any>(null);
+  const [isLoadingTransactionVolumes, setIsLoadingTransactionVolumes] = useState(false);
+  const [isProcessingSimulation, setIsProcessingSimulation] = useState(false);
+  
   // System Variables state
   const [limitToCardinalHealth, setLimitToCardinalHealth] = useState<boolean>(false);
+  
+  // Productivity Variables state
+  const [productivityVariables, setProductivityVariables] = useState({
+    targetStaffProductivityPerHour: 600,
+    lumPicksPerHour: 80,
+    bulkPicksPerHour: 40,
+    receiptLinesProcessedPerHour: 15,
+    putAwayLinesPerHour: 20,
+    letDownLinesPerHour: 20,
+    rfidLinesPerHour: 60,
+    rfidLinesPerDay: 7400,
+    ratioOfBulkPicksToLumPicks: 25,
+    ratioOfReceiptLinesToPicks: 5,
+    ratioOfPutLinesToPicks: 5,
+    ratioOfReplenishLinesToPicks: 2,
+    linesPerSupportResource: 1500
+  });
+
+  // Labor Variables state
+  const [laborVariables, setLaborVariables] = useState({
+    utilizationPercentage: 80,
+    leadershipAndAdministrationStaff: 6,
+    staffToSupervisorRatio: 10,
+    laborHoursPerDay: 8
+  });
   
   // Table sorting state
   const [supplierSortField, setSupplierSortField] = useState<string>('uniqueItemCount');
@@ -89,6 +120,122 @@ export default function Home() {
       totalRecords,
       totalAverageDaily: Math.round(totalAverageDaily * 100) / 100
     };
+  };
+
+  // Handle productivity variable updates
+  const updateProductivityVariable = (key: string, value: number) => {
+    setProductivityVariables(prev => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+  const updateLaborVariable = (key: string, value: number) => {
+    setLaborVariables(prev => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+  // Calculate points per transaction
+  const calculatePointsPerTransaction = () => {
+    const { targetStaffProductivityPerHour } = productivityVariables;
+    
+    return {
+      lumPoints: Math.round((targetStaffProductivityPerHour / productivityVariables.lumPicksPerHour) * 100) / 100,
+      bulkPoints: Math.round((targetStaffProductivityPerHour / productivityVariables.bulkPicksPerHour) * 100) / 100,
+      receiptPoints: Math.round((targetStaffProductivityPerHour / productivityVariables.receiptLinesProcessedPerHour) * 100) / 100,
+      putAwayPoints: Math.round((targetStaffProductivityPerHour / productivityVariables.putAwayLinesPerHour) * 100) / 100,
+      letDownPoints: Math.round((targetStaffProductivityPerHour / productivityVariables.letDownLinesPerHour) * 100) / 100,
+      rfidPoints: Math.round((productivityVariables.targetStaffProductivityPerHour / productivityVariables.rfidLinesPerHour) * 100) / 100
+    };
+  };
+
+  // Process simulation to generate labor statistics
+  const processSimulation = async () => {
+    setIsProcessingSimulation(true);
+    
+    // Debug: Log the variables being sent
+    console.log('DEBUG: UI Variables being sent:');
+    console.log('  productivityVariables:', productivityVariables);
+    console.log('  laborVariables:', laborVariables);
+    
+    try {
+      const response = await fetch('/api/process-simulation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          productivityVariables: {
+            ratioOfBulkPicksToLumPicks: productivityVariables.ratioOfBulkPicksToLumPicks,
+            targetStaffProductivityPerHour: productivityVariables.targetStaffProductivityPerHour,
+            bulkPicksPerHour: productivityVariables.bulkPicksPerHour,
+            lumPicksPerHour: productivityVariables.lumPicksPerHour,
+            ratioOfReplenishLinesToPicks: productivityVariables.ratioOfReplenishLinesToPicks,
+            letDownLinesPerHour: productivityVariables.letDownLinesPerHour,
+            ratioOfReceiptLinesToPicks: productivityVariables.ratioOfReceiptLinesToPicks,
+            receiptLinesProcessedPerHour: productivityVariables.receiptLinesProcessedPerHour,
+            ratioOfPutLinesToPicks: productivityVariables.ratioOfPutLinesToPicks,
+            putAwayLinesPerHour: productivityVariables.putAwayLinesPerHour,
+            laborHoursPerDay: laborVariables.laborHoursPerDay,
+            utilizationPercentage: laborVariables.utilizationPercentage,
+            linesPerSupportResource: productivityVariables.linesPerSupportResource,
+            rfidLinesPerDay: productivityVariables.rfidLinesPerDay,
+            rfidLinesPerHour: productivityVariables.rfidLinesPerHour
+          }
+        })
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        alert(`Process simulation completed successfully!\n\nProcessed ${result.data.processedDays} days with ${result.data.totalRecords} total records.`);
+        // Reload transaction volumes data after simulation
+        await loadTransactionVolumesData();
+      } else {
+        console.error('Process simulation failed:', result.error);
+        alert(`Process simulation failed: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Error processing simulation:', error);
+      alert(`Error processing simulation: ${error}`);
+    } finally {
+      setIsProcessingSimulation(false);
+    }
+  };
+
+  // Load transaction volumes data
+  const loadTransactionVolumesData = async () => {
+    try {
+      setIsLoadingTransactionVolumes(true);
+      console.log('Loading transaction volumes data...');
+      
+      // Fetch transaction volumes data (no filters needed)
+      const response = await fetch('/api/transaction-volumes');
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success) {
+          console.log('Transaction volumes data received:', result.data.transactionData.length, 'records');
+          setTransactionVolumesData(result.data.transactionData);
+          setTransactionVolumesSummary(result.data.summary);
+        } else {
+          console.error('Error fetching transaction volumes data:', result.error);
+          setTransactionVolumesData([]);
+          setTransactionVolumesSummary(null);
+        }
+      } else {
+        console.error('Failed to fetch transaction volumes data');
+        setTransactionVolumesData([]);
+        setTransactionVolumesSummary(null);
+      }
+    } catch (error) {
+      console.error('Error loading transaction volumes data:', error);
+      setTransactionVolumesData([]);
+      setTransactionVolumesSummary(null);
+    } finally {
+      setIsLoadingTransactionVolumes(false);
+    }
   };
 
   // Handle Ship To Location modal
@@ -213,6 +360,13 @@ export default function Home() {
   useEffect(() => {
     if (analysisData && analysisData.analysis.supplierAnalysis && filteredSupplierData.length === 0) {
       setFilteredSupplierData(analysisData.analysis.supplierAnalysis);
+    }
+  }, [analysisData]);
+
+  // Load transaction volumes data when analysis data is available
+  useEffect(() => {
+    if (analysisData && analysisData.analysis.supplierAnalysis) {
+      loadTransactionVolumesData();
     }
   }, [analysisData]);
 
@@ -1088,6 +1242,419 @@ export default function Home() {
               <div className="bg-white rounded-lg shadow-lg p-8">
                 <h3 className="text-2xl font-semibold text-gray-900 mb-8">Analysis Variables</h3>
                 
+                {/* Productivity Variables */}
+                <div className="bg-green-50 rounded-lg p-6 mb-6">
+                  <h4 className="text-xl font-semibold text-green-900 mb-6">Productivity Variables</h4>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Target Staff Productivity Per Hour */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Target Staff Productivity Per Hour
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.targetStaffProductivityPerHour}
+                        onChange={(e) => updateProductivityVariable('targetStaffProductivityPerHour', parseInt(e.target.value) || 600)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter the number of universal productivity points which represent a fully engaged staff member per hour - default = 600 points
+                      </p>
+                    </div>
+
+                    {/* LUM Picks Per Hour */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        LUM Picks Per Hour
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.lumPicksPerHour}
+                        onChange={(e) => updateProductivityVariable('lumPicksPerHour', parseInt(e.target.value) || 80)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter the number of each lines picked per hour target - default = 80 lines
+                      </p>
+                    </div>
+
+                    {/* BULK Picks Per Hour */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        BULK Picks Per Hour
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.bulkPicksPerHour}
+                        onChange={(e) => updateProductivityVariable('bulkPicksPerHour', parseInt(e.target.value) || 40)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter the number of bulk lines picked per hour target - default = 40 lines
+                      </p>
+                    </div>
+
+                    {/* Receipt Lines Processed Per Hour */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Receipt Lines Processed Per Hour
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.receiptLinesProcessedPerHour}
+                        onChange={(e) => updateProductivityVariable('receiptLinesProcessedPerHour', parseInt(e.target.value) || 15)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter the number of Receipt Lines unpackaged, counted, received, and staged per hour - default = 15 lines
+                      </p>
+                    </div>
+
+                    {/* Put Away Lines Per Hour */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Put Away Lines Per Hour
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.putAwayLinesPerHour}
+                        onChange={(e) => updateProductivityVariable('putAwayLinesPerHour', parseInt(e.target.value) || 20)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter the number of line target for put away per hour, default value = 20
+                      </p>
+                    </div>
+
+                    {/* Let Down Lines Per Hour */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Let Down Lines Per Hour
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.letDownLinesPerHour}
+                        onChange={(e) => updateProductivityVariable('letDownLinesPerHour', parseInt(e.target.value) || 20)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter the number of replenishment lines completed per hour, default value = 20
+                      </p>
+                    </div>
+
+                    {/* RFID Capture Lines Per Hour */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        RFID Lines Per Hour
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.rfidLinesPerHour}
+                        onChange={(e) => updateProductivityVariable('rfidLinesPerHour', parseInt(e.target.value) || 60)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Number of RFID tags which can be registered per hour, default value = 60
+                      </p>
+                    </div>
+
+
+                    {/* RFID Lines Per Day */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        RFID Lines Per Day
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.rfidLinesPerDay}
+                        onChange={(e) => updateProductivityVariable('rfidLinesPerDay', parseInt(e.target.value) || 7400)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter the number of RFID Lines expected for Scan and Capture per day - estimate = 7400
+                      </p>
+                    </div>
+
+                    {/* Ratio of Bulk Picks to LUM Picks */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Ratio of Bulk Picks to LUM Picks - %
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.ratioOfBulkPicksToLumPicks}
+                        onChange={(e) => updateProductivityVariable('ratioOfBulkPicksToLumPicks', parseInt(e.target.value) || 25)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="0"
+                        max="100"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter percentage of picks bulk picked from pallets vs each LUM pick - default value = 25%
+                      </p>
+                    </div>
+
+                    {/* Ratio of Receipt Lines to Picks */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Ratio of Receipt Lines to Picks - %
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.ratioOfReceiptLinesToPicks}
+                        onChange={(e) => updateProductivityVariable('ratioOfReceiptLinesToPicks', parseInt(e.target.value) || 5)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="0"
+                        max="100"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter percentage of receipt lines to pick lines - default value = 5%
+                      </p>
+                    </div>
+
+                    {/* Ratio of Put Lines to Picks */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Ratio of Put Lines to Picks - %
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.ratioOfPutLinesToPicks}
+                        onChange={(e) => updateProductivityVariable('ratioOfPutLinesToPicks', parseInt(e.target.value) || 5)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="0"
+                        max="100"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter percentage of Put lines to pick lines - default value = 5%
+                      </p>
+                    </div>
+
+                    {/* Ratio of Replenish Lines to Picks */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Ratio of Replenish Lines to Picks - %
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.ratioOfReplenishLinesToPicks}
+                        onChange={(e) => updateProductivityVariable('ratioOfReplenishLinesToPicks', parseInt(e.target.value) || 2)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="0"
+                        max="100"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter percentage letdown lines to pick lines - default value = 2%
+                      </p>
+                    </div>
+
+                    {/* Lines Per Support Resource */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Lines Per Support Resource
+                      </label>
+                      <input
+                        type="number"
+                        value={productivityVariables.linesPerSupportResource}
+                        onChange={(e) => updateProductivityVariable('linesPerSupportResource', parseInt(e.target.value) || 1500)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                        min="1"
+                      />
+                      <p className="text-xs text-gray-600">
+                        One Consolidator, Loader, Inductor support resource per identified number of lines - default = 1500
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Labor Variables */}
+                <div className="bg-blue-50 rounded-lg p-6 mb-6">
+                  <h4 className="text-xl font-semibold text-blue-900 mb-6">Labor Variables</h4>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Utilization Percentage */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Utilization Percentage - %
+                      </label>
+                      <input
+                        type="number"
+                        value={laborVariables.utilizationPercentage}
+                        onChange={(e) => updateLaborVariable('utilizationPercentage', parseInt(e.target.value) || 80)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        min="0"
+                        max="100"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter percentage of productive target time per FTE (Huddles, Breaks, Lunch) - default = 80%
+                      </p>
+                    </div>
+
+                    {/* Leadership and Administration Staff */}
+                    <div className="space-y-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Leadership and Administration Staff
+                      </label>
+                      <input
+                        type="number"
+                        value={laborVariables.leadershipAndAdministrationStaff}
+                        onChange={(e) => updateLaborVariable('leadershipAndAdministrationStaff', parseInt(e.target.value) || 6)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        min="0"
+                      />
+                      <p className="text-xs text-gray-600">
+                        Enter Number of leadership, Directors, Managers, Inventory Analysis, Educators - Default = 6
+                      </p>
+                    </div>
+
+        {/* Staff to Supervisor Ratio */}
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700">
+            Staff to Supervisor Ratio
+          </label>
+          <input
+            type="number"
+            value={laborVariables.staffToSupervisorRatio}
+            onChange={(e) => updateLaborVariable('staffToSupervisorRatio', parseInt(e.target.value) || 10)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            min="1"
+          />
+          <p className="text-xs text-gray-600">
+            Enter number of staff per supervisor - default = 10
+          </p>
+        </div>
+
+        {/* Labor Hours Per Day */}
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700">
+            Labor Hours Per Day
+          </label>
+          <input
+            type="number"
+            value={laborVariables.laborHoursPerDay}
+            onChange={(e) => updateLaborVariable('laborHoursPerDay', parseInt(e.target.value) || 8)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            min="1"
+            max="24"
+          />
+          <p className="text-xs text-gray-600">
+            Number of hours staff work per day - default = 8
+          </p>
+        </div>
+      </div>
+    </div>
+
+                {/* Points Per Transaction Table */}
+                <div className="bg-yellow-50 rounded-lg p-6 mb-6">
+                  <h4 className="text-xl font-semibold text-yellow-900 mb-6">Points Per Transaction</h4>
+                  <p className="text-sm text-yellow-700 mb-4">
+                    Calculated points for each transaction type based on your productivity variables.
+                  </p>
+                  
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full bg-white border border-yellow-200 rounded-lg">
+                      <thead className="bg-yellow-100">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-sm font-semibold text-yellow-900 border-b border-yellow-200">
+                            Transaction Type
+                          </th>
+                          <th className="px-4 py-3 text-left text-sm font-semibold text-yellow-900 border-b border-yellow-200">
+                            Points Per Transaction
+                          </th>
+                          <th className="px-4 py-3 text-left text-sm font-semibold text-yellow-900 border-b border-yellow-200">
+                            Calculation
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-yellow-200">
+                        <tr className="hover:bg-yellow-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                            LUM Picks
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-900 font-mono">
+                            {calculatePointsPerTransaction().lumPoints}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-600">
+                            {productivityVariables.targetStaffProductivityPerHour} ÷ {productivityVariables.lumPicksPerHour}
+                          </td>
+                        </tr>
+                        <tr className="hover:bg-yellow-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                            BULK Picks
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-900 font-mono">
+                            {calculatePointsPerTransaction().bulkPoints}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-600">
+                            {productivityVariables.targetStaffProductivityPerHour} ÷ {productivityVariables.bulkPicksPerHour}
+                          </td>
+                        </tr>
+                        <tr className="hover:bg-yellow-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                            Receipt Lines
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-900 font-mono">
+                            {calculatePointsPerTransaction().receiptPoints}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-600">
+                            {productivityVariables.targetStaffProductivityPerHour} ÷ {productivityVariables.receiptLinesProcessedPerHour}
+                          </td>
+                        </tr>
+                        <tr className="hover:bg-yellow-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                            Put Away Lines
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-900 font-mono">
+                            {calculatePointsPerTransaction().putAwayPoints}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-600">
+                            {productivityVariables.targetStaffProductivityPerHour} ÷ {productivityVariables.putAwayLinesPerHour}
+                          </td>
+                        </tr>
+                        <tr className="hover:bg-yellow-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                            Let Down Lines
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-900 font-mono">
+                            {calculatePointsPerTransaction().letDownPoints}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-600">
+                            {productivityVariables.targetStaffProductivityPerHour} ÷ {productivityVariables.letDownLinesPerHour}
+                          </td>
+                        </tr>
+                        <tr className="hover:bg-yellow-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                            RFID Capture
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-900 font-mono">
+                            {calculatePointsPerTransaction().rfidPoints}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-600">
+                            {productivityVariables.targetStaffProductivityPerHour} ÷ {productivityVariables.rfidLinesPerHour}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  <div className="mt-4 p-3 bg-yellow-100 rounded-md">
+                    <p className="text-sm text-yellow-800">
+                      <strong>Formula:</strong> Points per transaction = Target Staff Productivity Per Hour ÷ Transaction Rate Per Hour
+                    </p>
+                    <p className="text-xs text-yellow-700 mt-1">
+                      These values represent the productivity points earned for each transaction type based on your configured rates.
+                    </p>
+                  </div>
+                </div>
+                
                 {/* Cardinal Health Filter */}
                 <div className="bg-blue-50 rounded-lg p-6 mb-6">
                   <div className="flex items-center">
@@ -1332,6 +1899,24 @@ export default function Home() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
                       </svg>
                       View Database Statistics
+                    </button>
+                    <button
+                      onClick={() => setCurrentStep('transaction-volumes')}
+                      className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 inline-flex items-center"
+                    >
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                      </svg>
+                      View Transaction Volumes
+                    </button>
+                    <button
+                      onClick={() => setCurrentStep('labor-analysis')}
+                      className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 inline-flex items-center"
+                    >
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
+                      </svg>
+                      View Labor Analysis
                     </button>
                   </div>
                   <p className="text-sm text-gray-600 mt-2">
@@ -2069,7 +2654,322 @@ export default function Home() {
             </div>
           </div>
         </div>
-      )}
+          )}
+
+          {/* Transaction Volumes Analysis Details */}
+          {currentStep === 'transaction-volumes' && (
+            <div>
+              {/* Back to Results Button */}
+              <div className="mb-6 flex justify-start">
+                <button
+                  onClick={() => setCurrentStep('analysis')}
+                  className="flex items-center justify-center px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                >
+                  <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                  </svg>
+                  Back to Results
+                </button>
+              </div>
+              
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Transaction Volumes Analysis</h2>
+                <p className="text-gray-600">
+                  Analyze transaction volumes by date with detailed filtering and comprehensive summary statistics.
+                </p>
+              </div>
+
+        <div className="bg-white rounded-lg shadow-lg p-6">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">Transaction Volumes Analysis</h3>
+          
+          {/* Process Simulation Button */}
+          <div className="mb-6">
+            <button
+              onClick={processSimulation}
+              disabled={isProcessingSimulation}
+              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center"
+            >
+              {isProcessingSimulation ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Processing...
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  Process Simulation
+                </>
+              )}
+            </button>
+            <p className="text-sm text-gray-600 mt-2">
+              Generate daily labor statistics from the purchase orders data. This creates a summary table for faster analysis.
+            </p>
+          </div>
+
+                {/* Summary Statistics */}
+                {transactionVolumesSummary && (
+                  <div className="bg-blue-50 rounded-lg p-6 mb-6">
+                    <h4 className="text-lg font-semibold text-blue-900 mb-4">Summary Statistics</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-2xl font-bold text-blue-600">{transactionVolumesSummary.totalDays}</div>
+                        <div className="text-sm text-gray-600">Total Days</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-2xl font-bold text-blue-600">{(transactionVolumesSummary.totalTransactionLines || 0).toLocaleString()}</div>
+                        <div className="text-sm text-gray-600">Total Transaction Lines</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-2xl font-bold text-blue-600">{transactionVolumesSummary.averageLinesPerDay}</div>
+                        <div className="text-sm text-gray-600">Avg Lines Per Day</div>
+                      </div>
+                <div className="bg-white rounded-lg p-4">
+                  <div className="text-2xl font-bold text-blue-600">{(transactionVolumesSummary.totalQuantityPicked || 0).toLocaleString()}</div>
+                  <div className="text-sm text-gray-600">Total Quantity Picked</div>
+                </div>
+                    </div>
+                    
+                    {/* Weekday/Weekend Averages */}
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-xl font-bold text-green-600">{transactionVolumesSummary.averageLinesPerWeekday}</div>
+                        <div className="text-sm text-gray-600">Avg Lines Per Weekday</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-xl font-bold text-orange-600">{transactionVolumesSummary.averageLinesPerWeekend}</div>
+                        <div className="text-sm text-gray-600">Avg Lines Per Weekend</div>
+                      </div>
+                    </div>
+
+                    {/* Average Points per Weekday/Weekend */}
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-xl font-bold text-green-600">{Math.round(transactionVolumesSummary.averagePointsPerWeekday || 0).toLocaleString()}</div>
+                        <div className="text-sm text-gray-600">Avg Points Per Weekday</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-xl font-bold text-orange-600">{Math.round(transactionVolumesSummary.averagePointsPerWeekend || 0).toLocaleString()}</div>
+                        <div className="text-sm text-gray-600">Avg Points Per Weekend</div>
+                      </div>
+                    </div>
+
+                    {/* Day of Week Averages */}
+                    <div className="mt-4">
+                      <h5 className="text-md font-semibold text-blue-900 mb-3">Average Lines by Day of Week</h5>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {Object.entries(transactionVolumesSummary.dayOfWeekAverages).map(([day, average]) => (
+                          <div key={day} className="bg-white rounded-lg p-3 text-center">
+                            <div className="text-lg font-bold text-blue-600">{average}</div>
+                            <div className="text-xs text-gray-600">{day}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Transaction Volumes Table */}
+                {isLoadingTransactionVolumes ? (
+                  <div className="text-center py-8">
+                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                    <p className="mt-2 text-gray-600">Loading transaction volumes...</p>
+                  </div>
+                ) : transactionVolumesData.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full bg-white border border-gray-200 rounded-lg">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                            Date
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                            Transaction Lines
+                          </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                      Quantity Picked
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                      Bulk Points
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                      LUM Points
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                      Replen Points
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                      Receive Points
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                      Put Points
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                      Total Points
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {transactionVolumesData.map((row, index) => (
+                    <tr key={index} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {new Date(row.date).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {(row.transactionLines || 0).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {(row.quantityPicked || 0).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {Math.round(row.bulkPoints || 0).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {Math.round(row.lumPoints || 0).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {Math.round(row.replenPoints || 0).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {Math.round(row.receivePoints || 0).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {Math.round(row.putPoints || 0).toLocaleString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                        {Math.round(row.totalPoints || 0).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    No transaction volumes data available. Please apply filters or ensure data is loaded.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Labor Analysis Details */}
+          {currentStep === 'labor-analysis' && (
+            <div>
+              {/* Back to Results Button */}
+              <div className="mb-6 flex justify-start">
+                <button
+                  onClick={() => setCurrentStep('analysis')}
+                  className="flex items-center justify-center px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                >
+                  <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                  </svg>
+                  Back to Results
+                </button>
+              </div>
+              
+              <div className="mb-6">
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Labor Analysis</h2>
+                <p className="text-gray-600">
+                  Analyze labor productivity and workforce requirements based on transaction volumes and productivity variables.
+                </p>
+              </div>
+
+              <div className="bg-white rounded-lg shadow-lg p-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Labor Analysis</h3>
+                
+                {/* Process Simulation Button */}
+                <div className="mb-6">
+                  <button
+                    onClick={processSimulation}
+                    disabled={isProcessingSimulation}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center"
+                  >
+                    {isProcessingSimulation ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        Process Simulation
+                      </>
+                    )}
+                  </button>
+                  <p className="text-sm text-gray-600 mt-2">
+                    Generate daily labor statistics from the purchase orders data. This creates a summary table for faster analysis.
+                  </p>
+                </div>
+
+                {/* Summary Statistics */}
+                {transactionVolumesSummary && (
+                  <div className="bg-blue-50 rounded-lg p-6 mb-6">
+                    <h4 className="text-lg font-semibold text-blue-900 mb-4">Summary Statistics</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-2xl font-bold text-blue-600">{transactionVolumesSummary.totalDays}</div>
+                        <div className="text-sm text-gray-600">Total Days</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-2xl font-bold text-blue-600">{(transactionVolumesSummary.totalTransactionLines || 0).toLocaleString()}</div>
+                        <div className="text-sm text-gray-600">Total Transaction Lines</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-2xl font-bold text-blue-600">{transactionVolumesSummary.averageLinesPerDay}</div>
+                        <div className="text-sm text-gray-600">Avg Lines Per Day</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-2xl font-bold text-blue-600">{(transactionVolumesSummary.totalQuantityPicked || 0).toLocaleString()}</div>
+                        <div className="text-sm text-gray-600">Total Quantity Picked</div>
+                      </div>
+                    </div>
+                    
+                    {/* Weekday/Weekend Averages */}
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-xl font-bold text-green-600">{transactionVolumesSummary.averageLinesPerWeekday}</div>
+                        <div className="text-sm text-gray-600">Avg Lines Per Weekday</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-xl font-bold text-orange-600">{transactionVolumesSummary.averageLinesPerWeekend}</div>
+                        <div className="text-sm text-gray-600">Avg Lines Per Weekend</div>
+                      </div>
+                    </div>
+
+                    {/* Average Points per Weekday/Weekend */}
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-xl font-bold text-green-600">{Math.round(transactionVolumesSummary.averagePointsPerWeekday || 0).toLocaleString()}</div>
+                        <div className="text-sm text-gray-600">Avg Points Per Weekday</div>
+                      </div>
+                      <div className="bg-white rounded-lg p-4">
+                        <div className="text-xl font-bold text-orange-600">{Math.round(transactionVolumesSummary.averagePointsPerWeekend || 0).toLocaleString()}</div>
+                        <div className="text-sm text-gray-600">Avg Points Per Weekend</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Labor Analysis Table - Placeholder for now */}
+                {isLoadingTransactionVolumes ? (
+                  <div className="text-center py-8">
+                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                    <p className="mt-2 text-gray-600">Loading labor analysis...</p>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-lg p-6">
+                    <h4 className="text-lg font-semibold text-gray-900 mb-4">Labor Analysis Table</h4>
+                    <p className="text-gray-600">Labor analysis table will be implemented here with different columns than the Transaction Volumes table.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
     </div>
   );

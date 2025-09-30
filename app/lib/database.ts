@@ -35,6 +35,9 @@ export class CCFDatabase {
     // Create tables
     this.createTables();
     
+    // Migrate existing tables if needed
+    this.migrateDatabase();
+    
     // Create indexes for performance
     this.createIndexes();
   }
@@ -84,6 +87,122 @@ export class CCFDatabase {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // Labor Statistics table - daily summary data
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS labor_statistics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date DATE NOT NULL,
+        day_of_week TEXT NOT NULL,
+        transaction_lines INTEGER NOT NULL,
+        quantity_picked INTEGER NOT NULL,
+        bulk_points REAL NOT NULL DEFAULT 0,
+        lum_points REAL NOT NULL DEFAULT 0,
+        replen_points REAL NOT NULL DEFAULT 0,
+        receive_points REAL NOT NULL DEFAULT 0,
+        put_points REAL NOT NULL DEFAULT 0,
+        bulkFTE REAL NOT NULL DEFAULT 0,
+        lumFTE REAL NOT NULL DEFAULT 0,
+        receiveFTE REAL NOT NULL DEFAULT 0,
+        inventoryFTE REAL NOT NULL DEFAULT 0,
+        supportFTE REAL NOT NULL DEFAULT 0,
+        rfidFTE REAL NOT NULL DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(date)
+      )
+    `);
+  }
+
+  private migrateDatabase(): void {
+    console.log('Starting database migration...');
+    
+    // Check if labor_statistics table exists and get its structure
+    const tableInfo = this.db.prepare("PRAGMA table_info(labor_statistics)").all() as Array<{
+      cid: number;
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: any;
+      pk: number;
+    }>;
+    
+    console.log('Labor statistics table info:', tableInfo);
+    
+    // If table doesn't exist, it will be created by createTables()
+    if (tableInfo.length === 0) {
+      console.log('Labor statistics table does not exist, will be created by createTables()');
+      return;
+    }
+    
+    const hasBulkPoints = tableInfo.some(col => col.name === 'bulk_points');
+    const hasLumPoints = tableInfo.some(col => col.name === 'lum_points');
+    const hasReplenPoints = tableInfo.some(col => col.name === 'replen_points');
+    const hasReceivePoints = tableInfo.some(col => col.name === 'receive_points');
+    const hasPutPoints = tableInfo.some(col => col.name === 'put_points');
+    const hasBulkFTE = tableInfo.some(col => col.name === 'bulkFTE');
+    const hasLumFTE = tableInfo.some(col => col.name === 'lumFTE');
+    const hasReceiveFTE = tableInfo.some(col => col.name === 'receiveFTE');
+    const hasInventoryFTE = tableInfo.some(col => col.name === 'inventoryFTE');
+    const hasSupportFTE = tableInfo.some(col => col.name === 'supportFTE');
+    const hasRfidFTE = tableInfo.some(col => col.name === 'rfidFTE');
+    const dateColumn = tableInfo.find(col => col.name === 'date');
+    const isDateType = dateColumn?.type === 'DATE';
+    
+    console.log('Migration check:', {
+      hasBulkPoints,
+      hasLumPoints,
+      hasReplenPoints,
+      hasReceivePoints,
+      hasPutPoints,
+      hasBulkFTE,
+      hasLumFTE,
+      hasReceiveFTE,
+      hasInventoryFTE,
+      hasSupportFTE,
+      hasRfidFTE,
+      isDateType,
+      dateColumnType: dateColumn?.type
+    });
+    
+    // If we need to add columns or change date type, simply drop and recreate the table
+    if (!hasBulkPoints || !hasLumPoints || !hasReplenPoints || !hasReceivePoints || !hasPutPoints || !hasBulkFTE || !hasLumFTE || !hasReceiveFTE || !hasInventoryFTE || !hasSupportFTE || !hasRfidFTE || !isDateType) {
+      console.log('Migrating labor_statistics table structure...');
+      
+      try {
+        // Simply drop and recreate the table - no backup needed
+        this.db.exec('DROP TABLE IF EXISTS labor_statistics');
+        
+        // Recreate with correct structure
+        this.db.exec(`
+          CREATE TABLE labor_statistics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date DATE NOT NULL,
+            day_of_week TEXT NOT NULL,
+            transaction_lines INTEGER NOT NULL,
+            quantity_picked INTEGER NOT NULL,
+            bulk_points REAL NOT NULL DEFAULT 0,
+            lum_points REAL NOT NULL DEFAULT 0,
+            replen_points REAL NOT NULL DEFAULT 0,
+            receive_points REAL NOT NULL DEFAULT 0,
+            put_points REAL NOT NULL DEFAULT 0,
+            bulkFTE REAL NOT NULL DEFAULT 0,
+            lumFTE REAL NOT NULL DEFAULT 0,
+            receiveFTE REAL NOT NULL DEFAULT 0,
+            inventoryFTE REAL NOT NULL DEFAULT 0,
+            supportFTE REAL NOT NULL DEFAULT 0,
+            rfidFTE REAL NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(date)
+          )
+        `);
+        
+        console.log('Labor statistics table migration completed');
+      } catch (error) {
+        console.error('Migration error:', error);
+      }
+    } else {
+      console.log('No migration needed - all columns and types are correct');
+    }
   }
 
   private createIndexes(): void {
@@ -111,6 +230,17 @@ export class CCFDatabase {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_unspsc_code 
       ON purchase_orders(UNSPSC_Code)
+    `);
+    
+    // Labor statistics indexes
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_labor_date 
+      ON labor_statistics(date)
+    `);
+    
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_labor_day_of_week 
+      ON labor_statistics(day_of_week)
     `);
   }
 
@@ -618,6 +748,7 @@ export class CCFDatabase {
     console.log('Recreating database with corrected schema...');
     this.db.exec('DROP TABLE IF EXISTS purchase_orders');
     this.createTables();
+    this.migrateDatabase();
     this.createIndexes();
     console.log('Database recreated successfully');
   }
@@ -659,6 +790,422 @@ export class CCFDatabase {
       remainingRecords: remainingRecords.count
     };
   }
+
+  // Helper function to check if a date is a weekday
+  private isWeekday(dateString: string): boolean {
+    // Parse date string in MM/DD/YYYY format
+    const dateParts = dateString.split('/');
+    const parsedDate = new Date(parseInt(dateParts[2]), parseInt(dateParts[0]) - 1, parseInt(dateParts[1]));
+    const dayOfWeek = parsedDate.getDay();
+    
+    // Monday = 1, Tuesday = 2, ..., Friday = 5
+    // Saturday = 6, Sunday = 0
+    return dayOfWeek >= 1 && dayOfWeek <= 5;
+  }
+
+  // Helper function to get day of week name
+  private getDayOfWeekName(dateString: string): string {
+    const dateParts = dateString.split('/');
+    const parsedDate = new Date(parseInt(dateParts[2]), parseInt(dateParts[0]) - 1, parseInt(dateParts[1]));
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return dayNames[parsedDate.getDay()];
+  }
+
+  // Process simulation - generate daily labor statistics from purchase orders
+  public processSimulation(productivityVariables?: {
+    ratioOfBulkPicksToLumPicks: number;
+    targetStaffProductivityPerHour: number;
+    bulkPicksPerHour: number;
+    lumPicksPerHour: number;
+    ratioOfReplenishLinesToPicks: number;
+    letDownLinesPerHour: number;
+    ratioOfReceiptLinesToPicks: number;
+    receiptLinesProcessedPerHour: number;
+    ratioOfPutLinesToPicks: number;
+    putAwayLinesPerHour: number;
+    laborHoursPerDay: number;
+    utilizationPercentage: number;
+    linesPerSupportResource: number;
+    rfidLinesPerDay: number;
+    rfidLinesPerHour: number;
+  }): { processedDays: number; totalRecords: number } {
+    console.log('Starting process simulation...');
+    
+    // Clear existing labor statistics
+    this.db.prepare('DELETE FROM labor_statistics').run();
+    
+    // Get daily summary from purchase orders
+    const dailySummaryQuery = `
+      SELECT 
+        PO_Date as date,
+        COUNT(*) as transaction_lines,
+        COALESCE(SUM(CASE 
+          WHEN PO_Quantity_Ordered IS NOT NULL 
+            AND PO_Quantity_Ordered != '' 
+            AND PO_Quantity_Ordered GLOB '[0-9]*'
+          THEN CAST(PO_Quantity_Ordered AS INTEGER)
+          ELSE 0
+        END), 0) as quantity_picked
+      FROM purchase_orders 
+      WHERE PO_Date IS NOT NULL 
+        AND PO_Date != ''
+      GROUP BY PO_Date
+      ORDER BY PO_Date
+    `;
+    
+    const dailyData = this.db.prepare(dailySummaryQuery).all() as Array<{
+      date: string;
+      transaction_lines: number;
+      quantity_picked: number;
+    }>;
+    
+    console.log(`Found ${dailyData.length} days with transaction data`);
+    
+    // Debug: Check for null values
+    const nullValues = dailyData.filter(day => day.quantity_picked === null);
+    if (nullValues.length > 0) {
+      console.log(`Warning: Found ${nullValues.length} days with null quantity_picked values`);
+    }
+    
+    // Insert daily labor statistics
+    const insertQuery = `
+      INSERT INTO labor_statistics (date, day_of_week, transaction_lines, quantity_picked, bulk_points, lum_points, replen_points, receive_points, put_points, bulkFTE, lumFTE, receiveFTE, inventoryFTE, supportFTE, rfidFTE)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    
+    const insertStmt = this.db.prepare(insertQuery);
+    let processedDays = 0;
+    
+    // Default productivity variables if not provided (matching UI defaults)
+    const defaultVars = {
+      ratioOfBulkPicksToLumPicks: 25,
+      targetStaffProductivityPerHour: 600,
+      bulkPicksPerHour: 40,
+      lumPicksPerHour: 80,
+      ratioOfReplenishLinesToPicks: 2,
+      letDownLinesPerHour: 20,
+      ratioOfReceiptLinesToPicks: 5,
+      receiptLinesProcessedPerHour: 15,
+      ratioOfPutLinesToPicks: 5,
+      putAwayLinesPerHour: 20,
+      laborHoursPerDay: 8,
+      utilizationPercentage: 80,
+      linesPerSupportResource: 1500,
+      rfidLinesPerDay: 7400,
+      rfidLinesPerHour: 60
+    };
+    
+    const vars = productivityVariables || defaultVars;
+    
+    // Calculate points per transaction
+    const bulkPointsPerTransaction = vars.targetStaffProductivityPerHour / vars.bulkPicksPerHour;
+    const lumPointsPerTransaction = vars.targetStaffProductivityPerHour / vars.lumPicksPerHour;
+    const replenPointsPerTransaction = vars.targetStaffProductivityPerHour / vars.letDownLinesPerHour;
+    const receivePointsPerTransaction = vars.targetStaffProductivityPerHour / vars.receiptLinesProcessedPerHour;
+    const putPointsPerTransaction = vars.targetStaffProductivityPerHour / vars.putAwayLinesPerHour;
+    
+    for (const day of dailyData) {
+      // Use helper functions to determine weekday/weekend and day name
+      const isWeekday = this.isWeekday(day.date);
+      const dayOfWeek = this.getDayOfWeekName(day.date);
+      
+      // Calculate bulk, LUM, replenishment, receive, and put points
+      const bulkRatio = vars.ratioOfBulkPicksToLumPicks / 100;
+      const lumRatio = (100 - vars.ratioOfBulkPicksToLumPicks) / 100;
+      const replenRatio = vars.ratioOfReplenishLinesToPicks / 100;
+      const receiveRatio = vars.ratioOfReceiptLinesToPicks / 100;
+      const putRatio = vars.ratioOfPutLinesToPicks / 100;
+      
+      // Calculate points for weekdays and weekends
+      const weekdayBulkPoints = day.transaction_lines * bulkRatio * bulkPointsPerTransaction;
+      const weekdayLumPoints = day.transaction_lines * lumRatio * lumPointsPerTransaction;
+      const weekdayReplenPoints = day.transaction_lines * replenRatio * replenPointsPerTransaction;
+      const weekdayReceivePoints = day.transaction_lines * receiveRatio * receivePointsPerTransaction;
+      const weekdayPutPoints = day.transaction_lines * putRatio * putPointsPerTransaction;
+      
+      const weekendBulkPoints = day.transaction_lines * bulkRatio * bulkPointsPerTransaction;
+      const weekendLumPoints = day.transaction_lines * lumRatio * lumPointsPerTransaction;
+      const weekendReplenPoints = day.transaction_lines * replenRatio * replenPointsPerTransaction;
+      const weekendReceivePoints = 0; // No receive points on weekends
+      const weekendPutPoints = 0; // No put points on weekends
+      
+      // Apply appropriate logic based on weekday/weekend
+      const bulkPoints = isWeekday ? weekdayBulkPoints : weekendBulkPoints;
+      const lumPoints = isWeekday ? weekdayLumPoints : weekendLumPoints;
+      const replenPoints = isWeekday ? weekdayReplenPoints : weekendReplenPoints;
+      const receivePoints = isWeekday ? weekdayReceivePoints : weekendReceivePoints;
+      const putPoints = isWeekday ? weekdayPutPoints : weekendPutPoints;
+      
+      // Calculate bulkFTE = (bulk_points) / (Target Staff Productivity per Hour Variable * Labor Hours Per Day Variable * (Utilization Percentage Variable / 100))
+      // Note: targetStaffProductivityPerHour is the variable we want to use in the denominator
+      const denominator = vars.targetStaffProductivityPerHour * vars.laborHoursPerDay * (vars.utilizationPercentage / 100);
+      const bulkFTE = denominator > 0 ? bulkPoints / denominator : 0;
+      
+      // Calculate lumFTE = (lum_points) / (Target Staff Productivity per Hour Variable * Labor Hours Per Day Variable * (Utilization Percentage Variable / 100))
+      const lumFTE = denominator > 0 ? lumPoints / denominator : 0;
+      
+      // Calculate receiveFTE = (receive_points) / (Target Staff Productivity per Hour Variable * Labor Hours Per Day Variable * (Utilization Percentage Variable / 100))
+      const receiveFTE = denominator > 0 ? receivePoints / denominator : 0;
+      
+      // Calculate inventoryFTE = (replen_points + put_points) / (Target Staff Productivity per Hour Variable * Labor Hours Per Day Variable * (Utilization Percentage Variable / 100))
+      const inventoryFTE = denominator > 0 ? (replenPoints + putPoints) / denominator : 0;
+      
+      // Calculate supportFTE = (transaction_lines) / Lines per Support Resource variable
+      const supportFTE = vars.linesPerSupportResource > 0 ? day.transaction_lines / vars.linesPerSupportResource : 0;
+      
+      // Calculate RFID Capture Points Per Transaction = Total Staff Productivity Per Hour / RFID Lines Per Hour
+      const rfidCapturePointsPerTransaction = vars.rfidLinesPerHour > 0 ? vars.targetStaffProductivityPerHour / vars.rfidLinesPerHour : 0;
+      
+      // Calculate rfidFTE = (rfidLinesPerDay * rfidCapturePointsPerTransaction) / (Target Staff Productivity Per Hour * laborHoursPerDay × (utilizationPercentage / 100))
+      // For weekdays only, weekends = 0
+      const rfidFTE = isWeekday && denominator > 0 ? (vars.rfidLinesPerDay * rfidCapturePointsPerTransaction) / denominator : 0;
+      
+      
+      try {
+        // Ensure all values are valid numbers
+        const safeBulkFTE = isNaN(bulkFTE) || !isFinite(bulkFTE) || bulkFTE === null || bulkFTE === undefined ? 0 : bulkFTE;
+        const safeLumFTE = isNaN(lumFTE) || !isFinite(lumFTE) || lumFTE === null || lumFTE === undefined ? 0 : lumFTE;
+        const safeReceiveFTE = isNaN(receiveFTE) || !isFinite(receiveFTE) || receiveFTE === null || receiveFTE === undefined ? 0 : receiveFTE;
+        const safeInventoryFTE = isNaN(inventoryFTE) || !isFinite(inventoryFTE) || inventoryFTE === null || inventoryFTE === undefined ? 0 : inventoryFTE;
+        const safeSupportFTE = isNaN(supportFTE) || !isFinite(supportFTE) || supportFTE === null || supportFTE === undefined ? 0 : supportFTE;
+        const safeRfidFTE = isNaN(rfidFTE) || !isFinite(rfidFTE) || rfidFTE === null || rfidFTE === undefined ? 0 : rfidFTE;
+        
+        // Ensure all points values are valid numbers
+        const safeBulkPoints = isNaN(bulkPoints) || !isFinite(bulkPoints) || bulkPoints === null || bulkPoints === undefined ? 0 : bulkPoints;
+        const safeLumPoints = isNaN(lumPoints) || !isFinite(lumPoints) || lumPoints === null || lumPoints === undefined ? 0 : lumPoints;
+        const safeReplenPoints = isNaN(replenPoints) || !isFinite(replenPoints) || replenPoints === null || replenPoints === undefined ? 0 : replenPoints;
+        const safeReceivePoints = isNaN(receivePoints) || !isFinite(receivePoints) || receivePoints === null || receivePoints === undefined ? 0 : receivePoints;
+        const safePutPoints = isNaN(putPoints) || !isFinite(putPoints) || putPoints === null || putPoints === undefined ? 0 : putPoints;
+        
+        insertStmt.run(
+          day.date, 
+          dayOfWeek, 
+          day.transaction_lines, 
+          day.quantity_picked || 0,
+          Math.round(safeBulkPoints * 100) / 100,
+          Math.round(safeLumPoints * 100) / 100,
+          Math.round(safeReplenPoints * 100) / 100,
+          Math.round(safeReceivePoints * 100) / 100,
+          Math.round(safePutPoints * 100) / 100,
+          Math.round(safeBulkFTE * 100) / 100,
+          Math.round(safeLumFTE * 100) / 100,
+          Math.round(safeReceiveFTE * 100) / 100,
+          Math.round(safeInventoryFTE * 100) / 100,
+          Math.round(safeSupportFTE * 100) / 100,
+          Math.round(safeRfidFTE * 100) / 100
+        );
+        processedDays++;
+      } catch (error) {
+        console.error(`Error inserting data for date ${day.date}:`, error);
+      }
+    }
+    
+    const totalRecords = this.db.prepare('SELECT COUNT(*) as count FROM labor_statistics').get() as { count: number };
+    
+    
+    console.log(`Process simulation completed: ${processedDays} days processed, ${totalRecords.count} total records`);
+    
+    return {
+      processedDays,
+      totalRecords: totalRecords.count
+    };
+  }
+
+  // Get labor statistics for analysis
+  public getLaborStatistics(): any[] {
+    const query = `
+      SELECT * FROM labor_statistics 
+      ORDER BY date ASC
+    `;
+    
+    return this.db.prepare(query).all();
+  }
+
+  // Get labor statistics summary (for Transaction Volumes analysis)
+  public getLaborStatisticsSummary(): {
+    totalDays: number;
+    totalTransactionLines: number;
+    totalQuantityPicked: number;
+    averageLinesPerDay: number;
+    averageLinesPerWeekday: number;
+    averageLinesPerWeekend: number;
+    averagePointsPerWeekday: number;
+    averagePointsPerWeekend: number;
+    dayOfWeekAverages: { [key: string]: number };
+    startDate: string;
+    endDate: string;
+  } {
+    // Get basic summary
+    const summaryQuery = `
+      SELECT 
+        COUNT(*) as totalDays,
+        SUM(transaction_lines) as totalTransactionLines,
+        COALESCE(SUM(quantity_picked), 0) as totalQuantityPicked,
+        MIN(date) as startDate,
+        MAX(date) as endDate
+      FROM labor_statistics
+    `;
+    
+    const summary = this.db.prepare(summaryQuery).get() as {
+      totalDays: number;
+      totalTransactionLines: number;
+      totalQuantityPicked: number;
+      startDate: string;
+      endDate: string;
+    };
+    
+    // Calculate averages
+    const averageLinesPerDay = summary.totalDays > 0 ? 
+      Math.round((summary.totalTransactionLines / summary.totalDays) * 100) / 100 : 0;
+    
+    // Get weekday vs weekend data
+    const weekdayQuery = `
+      SELECT AVG(transaction_lines) as avgLines
+      FROM labor_statistics 
+      WHERE day_of_week IN ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday')
+    `;
+    
+    const weekendQuery = `
+      SELECT AVG(transaction_lines) as avgLines
+      FROM labor_statistics 
+      WHERE day_of_week IN ('Saturday', 'Sunday')
+    `;
+    
+    const weekdayAvg = this.db.prepare(weekdayQuery).get() as { avgLines: number };
+    const weekendAvg = this.db.prepare(weekendQuery).get() as { avgLines: number };
+    
+    const averageLinesPerWeekday = weekdayAvg.avgLines ? 
+      Math.round(weekdayAvg.avgLines * 100) / 100 : 0;
+    const averageLinesPerWeekend = weekendAvg.avgLines ? 
+      Math.round(weekendAvg.avgLines * 100) / 100 : 0;
+    
+    // Calculate average points for weekdays and weekends
+    const weekdayPointsQuery = `
+      SELECT AVG(bulk_points + lum_points + replen_points + receive_points + put_points) as avgPoints
+      FROM labor_statistics 
+      WHERE day_of_week IN ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday')
+    `;
+    
+    const weekendPointsQuery = `
+      SELECT AVG(bulk_points + lum_points + replen_points + receive_points + put_points) as avgPoints
+      FROM labor_statistics 
+      WHERE day_of_week IN ('Saturday', 'Sunday')
+    `;
+    
+    const weekdayPointsAvg = this.db.prepare(weekdayPointsQuery).get() as { avgPoints: number };
+    const weekendPointsAvg = this.db.prepare(weekendPointsQuery).get() as { avgPoints: number };
+    
+    const averagePointsPerWeekday = weekdayPointsAvg.avgPoints ? 
+      Math.round(weekdayPointsAvg.avgPoints * 100) / 100 : 0;
+    const averagePointsPerWeekend = weekendPointsAvg.avgPoints ? 
+      Math.round(weekendPointsAvg.avgPoints * 100) / 100 : 0;
+    
+    // Get day of week averages
+    const dayOfWeekQuery = `
+      SELECT day_of_week, AVG(transaction_lines) as avgLines
+      FROM labor_statistics 
+      GROUP BY day_of_week
+      ORDER BY 
+        CASE day_of_week
+          WHEN 'Sunday' THEN 0
+          WHEN 'Monday' THEN 1
+          WHEN 'Tuesday' THEN 2
+          WHEN 'Wednesday' THEN 3
+          WHEN 'Thursday' THEN 4
+          WHEN 'Friday' THEN 5
+          WHEN 'Saturday' THEN 6
+        END
+    `;
+    
+    const dayOfWeekData = this.db.prepare(dayOfWeekQuery).all() as Array<{
+      day_of_week: string;
+      avgLines: number;
+    }>;
+    
+    const dayOfWeekAverages: { [key: string]: number } = {};
+    dayOfWeekData.forEach(day => {
+      dayOfWeekAverages[day.day_of_week] = Math.round(day.avgLines * 100) / 100;
+    });
+    
+    return {
+      totalDays: summary.totalDays,
+      totalTransactionLines: summary.totalTransactionLines,
+      totalQuantityPicked: summary.totalQuantityPicked,
+      averageLinesPerDay,
+      averageLinesPerWeekday,
+      averageLinesPerWeekend,
+      averagePointsPerWeekday,
+      averagePointsPerWeekend,
+      dayOfWeekAverages,
+      startDate: summary.startDate,
+      endDate: summary.endDate
+    };
+  }
+
+  // Clear labor statistics
+  public clearLaborStatistics(): number {
+    const result = this.db.prepare('DELETE FROM labor_statistics').run();
+    return result.changes;
+  }
+
+  // Force migration of labor statistics table
+  public forceMigrateLaborStatistics(): { success: boolean; message: string } {
+    try {
+      console.log('Force migrating labor statistics table...');
+      this.migrateDatabase();
+      return { success: true, message: 'Migration completed successfully' };
+    } catch (error) {
+      console.error('Force migration error:', error);
+      return { 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
+  }
+
+  // Force recreate labor statistics table
+  public forceRecreateLaborStatistics(): { success: boolean; message: string } {
+    try {
+      console.log('Force recreating labor statistics table...');
+      
+      // Drop existing table
+      this.db.exec('DROP TABLE IF EXISTS labor_statistics');
+      
+      // Recreate the table with correct structure
+      this.db.exec(`
+        CREATE TABLE labor_statistics (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          date DATE NOT NULL,
+          day_of_week TEXT NOT NULL,
+          transaction_lines INTEGER NOT NULL,
+          quantity_picked INTEGER NOT NULL,
+          bulk_points REAL NOT NULL DEFAULT 0,
+          lum_points REAL NOT NULL DEFAULT 0,
+          replen_points REAL NOT NULL DEFAULT 0,
+          receive_points REAL NOT NULL DEFAULT 0,
+          put_points REAL NOT NULL DEFAULT 0,
+          bulkFTE REAL NOT NULL DEFAULT 0,
+          lumFTE REAL NOT NULL DEFAULT 0,
+          receiveFTE REAL NOT NULL DEFAULT 0,
+          inventoryFTE REAL NOT NULL DEFAULT 0,
+          supportFTE REAL NOT NULL DEFAULT 0,
+          rfidFTE REAL NOT NULL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(date)
+        )
+      `);
+      
+      console.log('Labor statistics table recreated successfully');
+      return { success: true, message: 'Labor statistics table recreated successfully' };
+    } catch (error) {
+      console.error('Force recreate error:', error);
+      return { 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
+  }
+
 }
 
 // Global singleton that persists across Next.js API routes
