@@ -27,8 +27,32 @@ export async function POST(request: NextRequest) {
         inventoryFTE REAL NOT NULL DEFAULT 0,
         supportFTE REAL NOT NULL DEFAULT 0,
         rfidFTE REAL NOT NULL DEFAULT 0,
+        supervisorFTE REAL NOT NULL DEFAULT 0,
+        leaderFTE REAL NOT NULL DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(date)
+      )
+    `);
+    
+    // Drop and recreate the labor_analysis_summary table
+    database.exec('DROP TABLE IF EXISTS labor_analysis_summary');
+    database.exec(`
+      CREATE TABLE labor_analysis_summary (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        day_type TEXT NOT NULL,
+        day_count INTEGER NOT NULL,
+        avg_bulkFTE REAL NOT NULL,
+        avg_lumFTE REAL NOT NULL,
+        avg_receiveFTE REAL NOT NULL,
+        avg_inventoryFTE REAL NOT NULL,
+        avg_supportFTE REAL NOT NULL,
+        avg_rfidFTE REAL NOT NULL,
+        avg_supervisorFTE REAL NOT NULL,
+        avg_leaderFTE REAL NOT NULL,
+        avg_totalFTE REAL NOT NULL,
+        stdev_totalFTE REAL NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
     

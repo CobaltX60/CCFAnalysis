@@ -41,7 +41,7 @@ export default function Home() {
   const [importResults, setImportResults] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [currentStep, setCurrentStep] = useState<'upload' | 'loading' | 'analysis-variables' | 'analysis' | 'supplier-details' | 'shipto-details' | 'item-details' | 'transaction-volumes'>('upload');
+  const [currentStep, setCurrentStep] = useState<'upload' | 'loading' | 'analysis-variables' | 'analysis' | 'supplier-details' | 'shipto-details' | 'item-details' | 'transaction-volumes' | 'labor-analysis'>('upload');
   const [analysisData, setAnalysisData] = useState<any>(null);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
   
@@ -71,6 +71,16 @@ export default function Home() {
   const [isLoadingTransactionVolumes, setIsLoadingTransactionVolumes] = useState(false);
   const [isProcessingSimulation, setIsProcessingSimulation] = useState(false);
   
+  // Labor Statistics Analysis state
+  const [laborStatsData, setLaborStatsData] = useState<any[]>([]);
+  const [laborStatsSummary, setLaborStatsSummary] = useState<any>(null);
+  const [laborStatsOverall, setLaborStatsOverall] = useState<any>(null);
+  const [isLoadingLaborStats, setIsLoadingLaborStats] = useState(false);
+  
+  // Labor Statistics sorting state
+  const [laborStatsSortColumn, setLaborStatsSortColumn] = useState<string>('date');
+  const [laborStatsSortDirection, setLaborStatsSortDirection] = useState<'asc' | 'desc'>('asc');
+  
   // System Variables state
   const [limitToCardinalHealth, setLimitToCardinalHealth] = useState<boolean>(false);
   
@@ -95,7 +105,7 @@ export default function Home() {
   const [laborVariables, setLaborVariables] = useState({
     utilizationPercentage: 80,
     leadershipAndAdministrationStaff: 6,
-    staffToSupervisorRatio: 10,
+    staffToSupervisorRatio: 12,
     laborHoursPerDay: 8
   });
   
@@ -182,7 +192,9 @@ export default function Home() {
             utilizationPercentage: laborVariables.utilizationPercentage,
             linesPerSupportResource: productivityVariables.linesPerSupportResource,
             rfidLinesPerDay: productivityVariables.rfidLinesPerDay,
-            rfidLinesPerHour: productivityVariables.rfidLinesPerHour
+            rfidLinesPerHour: productivityVariables.rfidLinesPerHour,
+            staffToSupervisorRatio: laborVariables.staffToSupervisorRatio,
+            leadershipAndAdministrationStaff: laborVariables.leadershipAndAdministrationStaff
           }
         })
       });
@@ -235,6 +247,43 @@ export default function Home() {
       setTransactionVolumesSummary(null);
     } finally {
       setIsLoadingTransactionVolumes(false);
+    }
+  };
+
+  // Load labor statistics data
+  const loadLaborStatsData = async () => {
+    try {
+      setIsLoadingLaborStats(true);
+      console.log('Loading labor statistics data...');
+      
+      // Fetch labor statistics data
+      const response = await fetch('/api/labor-statistics');
+      if (response.ok) {
+        const result = await response.json();
+        if (result.success) {
+          console.log('Labor statistics data received:', result.data.laborStats.length, 'records');
+          setLaborStatsData(result.data.laborStats);
+          setLaborStatsSummary(result.data.summaryStats);
+          setLaborStatsOverall(result.data.overallStats);
+        } else {
+          console.error('Error fetching labor statistics data:', result.error);
+          setLaborStatsData([]);
+          setLaborStatsSummary(null);
+          setLaborStatsOverall(null);
+        }
+      } else {
+        console.error('Failed to fetch labor statistics data');
+        setLaborStatsData([]);
+        setLaborStatsSummary(null);
+        setLaborStatsOverall(null);
+      }
+    } catch (error) {
+      console.error('Error loading labor statistics data:', error);
+      setLaborStatsData([]);
+      setLaborStatsSummary(null);
+      setLaborStatsOverall(null);
+    } finally {
+      setIsLoadingLaborStats(false);
     }
   };
 
@@ -509,6 +558,50 @@ export default function Home() {
       loadAnalysisData();
     }
   }, [currentStep]);
+
+  // Load labor statistics data when labor-analysis step is shown
+  useEffect(() => {
+    if (currentStep === 'labor-analysis') {
+      console.log('Loading labor statistics data...');
+      loadLaborStatsData();
+    }
+  }, [currentStep]);
+
+  // Labor Statistics sorting function
+  const handleLaborStatsSort = (column: string) => {
+    if (laborStatsSortColumn === column) {
+      setLaborStatsSortDirection(laborStatsSortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setLaborStatsSortColumn(column);
+      setLaborStatsSortDirection('asc');
+    }
+  };
+
+  // Sort labor statistics data
+  const sortedLaborStatsData = [...laborStatsData].sort((a, b) => {
+    let aValue = a[laborStatsSortColumn];
+    let bValue = b[laborStatsSortColumn];
+    
+    // Handle numeric columns
+    if (['transaction_lines', 'bulkFTE', 'lumFTE', 'receiveFTE', 'inventoryFTE', 'supportFTE', 'rfidFTE', 'supervisorFTE', 'leaderFTE'].includes(laborStatsSortColumn)) {
+      aValue = parseFloat(aValue) || 0;
+      bValue = parseFloat(bValue) || 0;
+    }
+    
+    // Handle date column
+    if (laborStatsSortColumn === 'date') {
+      aValue = new Date(aValue);
+      bValue = new Date(bValue);
+    }
+    
+    if (aValue < bValue) {
+      return laborStatsSortDirection === 'asc' ? -1 : 1;
+    }
+    if (aValue > bValue) {
+      return laborStatsSortDirection === 'asc' ? 1 : -1;
+    }
+    return 0;
+  });
 
   // Debug effect to monitor state changes
   useEffect(() => {
@@ -1523,12 +1616,12 @@ export default function Home() {
           <input
             type="number"
             value={laborVariables.staffToSupervisorRatio}
-            onChange={(e) => updateLaborVariable('staffToSupervisorRatio', parseInt(e.target.value) || 10)}
+            onChange={(e) => updateLaborVariable('staffToSupervisorRatio', parseInt(e.target.value) || 12)}
             className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             min="1"
           />
           <p className="text-xs text-gray-600">
-            Enter number of staff per supervisor - default = 10
+            Enter number of staff per supervisor - default = 12
           </p>
         </div>
 
@@ -2955,16 +3048,233 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* Labor Analysis Table - Placeholder for now */}
-                {isLoadingTransactionVolumes ? (
+                {/* Labor Analysis Table */}
+                {isLoadingLaborStats ? (
                   <div className="text-center py-8">
                     <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
                     <p className="mt-2 text-gray-600">Loading labor analysis...</p>
                   </div>
+                ) : laborStatsData.length > 0 ? (
+                  <div className="bg-white rounded-lg p-6">
+                    <h4 className="text-lg font-semibold text-gray-900 mb-4">Labor Statistics Table</h4>
+                    
+                    {/* Summary Statistics Header */}
+                    {laborStatsSummary && laborStatsOverall && (
+                      <div className="bg-gray-50 rounded-lg p-4 mb-6">
+                        <h5 className="text-md font-semibold text-gray-800 mb-3">Average FTE Requirements</h5>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                          {laborStatsSummary.map((summary: any, index: number) => (
+                            <div key={index} className="bg-white rounded-lg p-4">
+                              <h6 className="font-semibold text-gray-700 mb-2">
+                                {summary.day_type} ({summary.day_count} days)
+                              </h6>
+                              <div className="grid grid-cols-2 gap-2 text-sm">
+                                <div>Bulk FTE: <span className="font-semibold">{Math.round(summary.avg_bulkFTE || 0)}</span></div>
+                                <div>LUM FTE: <span className="font-semibold">{Math.round(summary.avg_lumFTE || 0)}</span></div>
+                                <div>Receive FTE: <span className="font-semibold">{Math.round(summary.avg_receiveFTE || 0)}</span></div>
+                                <div>Inventory FTE: <span className="font-semibold">{Math.round(summary.avg_inventoryFTE || 0)}</span></div>
+                                <div>Support FTE: <span className="font-semibold">{Math.round(summary.avg_supportFTE || 0)}</span></div>
+                                <div>RFID FTE: <span className="font-semibold">{Math.round(summary.avg_rfidFTE || 0)}</span></div>
+                                <div>Supervisor FTE: <span className="font-semibold">{Math.round(summary.avg_supervisorFTE || 0)}</span></div>
+                                <div>Leader FTE: <span className="font-semibold">{Math.round(summary.avg_leaderFTE || 0)}</span></div>
+                                <div className="col-span-2 border-t pt-2">
+                                  <div className="mb-1">
+                                    <strong>Total FTE: {Math.round(summary.avg_totalFTE || 0)}</strong>
+                                  </div>
+                       <div className="text-xs text-gray-600">
+                         1σ Variation: ±{Math.round(summary.stdev_totalFTE || 0)} FTE
+                         <br />
+                         Range: {Math.round((summary.avg_totalFTE || 0) - (summary.stdev_totalFTE || 0))} - {Math.round((summary.avg_totalFTE || 0) + (summary.stdev_totalFTE || 0))}
+                       </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Detailed Labor Statistics Table */}
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('date')}
+                            >
+                              <div className="flex items-center">
+                                Date
+                                {laborStatsSortColumn === 'date' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('day_of_week')}
+                            >
+                              <div className="flex items-center">
+                                Day
+                                {laborStatsSortColumn === 'day_of_week' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('transaction_lines')}
+                            >
+                              <div className="flex items-center">
+                                Transaction Lines
+                                {laborStatsSortColumn === 'transaction_lines' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('bulkFTE')}
+                            >
+                              <div className="flex items-center">
+                                Bulk FTE
+                                {laborStatsSortColumn === 'bulkFTE' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('lumFTE')}
+                            >
+                              <div className="flex items-center">
+                                LUM FTE
+                                {laborStatsSortColumn === 'lumFTE' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('receiveFTE')}
+                            >
+                              <div className="flex items-center">
+                                Receive FTE
+                                {laborStatsSortColumn === 'receiveFTE' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('inventoryFTE')}
+                            >
+                              <div className="flex items-center">
+                                Inventory FTE
+                                {laborStatsSortColumn === 'inventoryFTE' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('supportFTE')}
+                            >
+                              <div className="flex items-center">
+                                Support FTE
+                                {laborStatsSortColumn === 'supportFTE' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('rfidFTE')}
+                            >
+                              <div className="flex items-center">
+                                RFID FTE
+                                {laborStatsSortColumn === 'rfidFTE' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('supervisorFTE')}
+                            >
+                              <div className="flex items-center">
+                                Supervisor FTE
+                                {laborStatsSortColumn === 'supervisorFTE' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                              onClick={() => handleLaborStatsSort('leaderFTE')}
+                            >
+                              <div className="flex items-center">
+                                Leader FTE
+                                {laborStatsSortColumn === 'leaderFTE' && (
+                                  <span className="ml-1">
+                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                            </th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                              Total FTE
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white divide-y divide-gray-200">
+                          {sortedLaborStatsData.map((row: any, index: number) => {
+                            const totalFTE = (row.bulkFTE || 0) + (row.lumFTE || 0) + (row.receiveFTE || 0) + (row.inventoryFTE || 0) + (row.supportFTE || 0) + (row.rfidFTE || 0) + (row.supervisorFTE || 0) + (row.leaderFTE || 0);
+                            return (
+                              <tr key={index} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{row.date}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{row.day_of_week}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{row.transaction_lines?.toLocaleString()}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.bulkFTE || 0)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.lumFTE || 0)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.receiveFTE || 0)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.inventoryFTE || 0)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.supportFTE || 0)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.rfidFTE || 0)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.supervisorFTE || 0)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.leaderFTE || 0)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">{Math.round(totalFTE)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 ) : (
                   <div className="bg-white rounded-lg p-6">
                     <h4 className="text-lg font-semibold text-gray-900 mb-4">Labor Analysis Table</h4>
-                    <p className="text-gray-600">Labor analysis table will be implemented here with different columns than the Transaction Volumes table.</p>
+                    <p className="text-gray-600">No labor statistics data available. Please run the process simulation first.</p>
                   </div>
                 )}
               </div>

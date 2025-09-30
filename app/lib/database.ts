@@ -111,6 +111,27 @@ export class CCFDatabase {
         UNIQUE(date)
       )
     `);
+
+    // Labor Analysis Summary table - pre-calculated results
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS labor_analysis_summary (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        day_type TEXT NOT NULL,
+        day_count INTEGER NOT NULL,
+        avg_bulkFTE REAL NOT NULL,
+        avg_lumFTE REAL NOT NULL,
+        avg_receiveFTE REAL NOT NULL,
+        avg_inventoryFTE REAL NOT NULL,
+        avg_supportFTE REAL NOT NULL,
+        avg_rfidFTE REAL NOT NULL,
+        avg_supervisorFTE REAL NOT NULL,
+        avg_leaderFTE REAL NOT NULL,
+        avg_totalFTE REAL NOT NULL,
+        stdev_totalFTE REAL NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
   }
 
   private migrateDatabase(): void {
@@ -828,6 +849,8 @@ export class CCFDatabase {
     linesPerSupportResource: number;
     rfidLinesPerDay: number;
     rfidLinesPerHour: number;
+    staffToSupervisorRatio: number;
+    leadershipAndAdministrationStaff: number;
   }): { processedDays: number; totalRecords: number } {
     console.log('Starting process simulation...');
     
@@ -869,8 +892,8 @@ export class CCFDatabase {
     
     // Insert daily labor statistics
     const insertQuery = `
-      INSERT INTO labor_statistics (date, day_of_week, transaction_lines, quantity_picked, bulk_points, lum_points, replen_points, receive_points, put_points, bulkFTE, lumFTE, receiveFTE, inventoryFTE, supportFTE, rfidFTE)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO labor_statistics (date, day_of_week, transaction_lines, quantity_picked, bulk_points, lum_points, replen_points, receive_points, put_points, bulkFTE, lumFTE, receiveFTE, inventoryFTE, supportFTE, rfidFTE, supervisorFTE, leaderFTE)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     
     const insertStmt = this.db.prepare(insertQuery);
@@ -892,7 +915,9 @@ export class CCFDatabase {
       utilizationPercentage: 80,
       linesPerSupportResource: 1500,
       rfidLinesPerDay: 7400,
-      rfidLinesPerHour: 60
+      rfidLinesPerHour: 60,
+      staffToSupervisorRatio: 12,
+      leadershipAndAdministrationStaff: 6
     };
     
     const vars = productivityVariables || defaultVars;
@@ -960,7 +985,6 @@ export class CCFDatabase {
       // For weekdays only, weekends = 0
       const rfidFTE = isWeekday && denominator > 0 ? (vars.rfidLinesPerDay * rfidCapturePointsPerTransaction) / denominator : 0;
       
-      
       try {
         // Ensure all values are valid numbers
         const safeBulkFTE = isNaN(bulkFTE) || !isFinite(bulkFTE) || bulkFTE === null || bulkFTE === undefined ? 0 : bulkFTE;
@@ -969,6 +993,15 @@ export class CCFDatabase {
         const safeInventoryFTE = isNaN(inventoryFTE) || !isFinite(inventoryFTE) || inventoryFTE === null || inventoryFTE === undefined ? 0 : inventoryFTE;
         const safeSupportFTE = isNaN(supportFTE) || !isFinite(supportFTE) || supportFTE === null || supportFTE === undefined ? 0 : supportFTE;
         const safeRfidFTE = isNaN(rfidFTE) || !isFinite(rfidFTE) || rfidFTE === null || rfidFTE === undefined ? 0 : rfidFTE;
+        
+        // Calculate supervisorFTE = sum(safeBulkFTE + safeLumFTE + safeReceiveFTE + safeInventoryFTE + safeSupportFTE + safeRfidFTE) / Staff to Supervisor Ratio
+        const totalStaffFTE = safeBulkFTE + safeLumFTE + safeReceiveFTE + safeInventoryFTE + safeSupportFTE + safeRfidFTE;
+        const supervisorFTE = vars.staffToSupervisorRatio > 0 ? totalStaffFTE / vars.staffToSupervisorRatio : 0;
+        const safeSupervisorFTE = isNaN(supervisorFTE) || !isFinite(supervisorFTE) || supervisorFTE === null || supervisorFTE === undefined ? 0 : supervisorFTE;
+        
+        // Calculate leaderFTE: For weekdays = Leadership and Administration Staff Variable, For weekends = 1
+        const leaderFTE = isWeekday ? vars.leadershipAndAdministrationStaff : 1;
+        const safeLeaderFTE = isNaN(leaderFTE) || !isFinite(leaderFTE) || leaderFTE === null || leaderFTE === undefined ? 0 : leaderFTE;
         
         // Ensure all points values are valid numbers
         const safeBulkPoints = isNaN(bulkPoints) || !isFinite(bulkPoints) || bulkPoints === null || bulkPoints === undefined ? 0 : bulkPoints;
@@ -992,7 +1025,9 @@ export class CCFDatabase {
           Math.round(safeReceiveFTE * 100) / 100,
           Math.round(safeInventoryFTE * 100) / 100,
           Math.round(safeSupportFTE * 100) / 100,
-          Math.round(safeRfidFTE * 100) / 100
+          Math.round(safeRfidFTE * 100) / 100,
+          Math.round(safeSupervisorFTE * 100) / 100,
+          Math.round(safeLeaderFTE * 100) / 100
         );
         processedDays++;
       } catch (error) {
@@ -1005,10 +1040,104 @@ export class CCFDatabase {
     
     console.log(`Process simulation completed: ${processedDays} days processed, ${totalRecords.count} total records`);
     
+    // Update labor analysis summary
+    this.updateLaborAnalysisSummary();
+    
     return {
       processedDays,
       totalRecords: totalRecords.count
     };
+  }
+
+  // Update labor analysis summary table with pre-calculated results
+  private updateLaborAnalysisSummary(): void {
+    try {
+      console.log('Updating labor analysis summary...');
+      
+      // Clear existing summary data
+      this.db.exec('DELETE FROM labor_analysis_summary');
+      
+      // Calculate summary statistics with 1-sigma variation
+      const summaryQuery = `
+        SELECT 
+          CASE 
+            WHEN day_of_week IN ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday') THEN 'Weekday'
+            ELSE 'Weekend'
+          END as day_type,
+          COUNT(*) as day_count,
+          AVG(bulkFTE) as avg_bulkFTE,
+          AVG(lumFTE) as avg_lumFTE,
+          AVG(receiveFTE) as avg_receiveFTE,
+          AVG(inventoryFTE) as avg_inventoryFTE,
+          AVG(supportFTE) as avg_supportFTE,
+          AVG(rfidFTE) as avg_rfidFTE,
+          AVG(supervisorFTE) as avg_supervisorFTE,
+          AVG(leaderFTE) as avg_leaderFTE,
+          AVG(bulkFTE + lumFTE + receiveFTE + inventoryFTE + supportFTE + rfidFTE + supervisorFTE + leaderFTE) as avg_totalFTE
+        FROM labor_statistics
+        GROUP BY day_type
+      `;
+      
+      const summaryStats = this.db.prepare(summaryQuery).all();
+      
+      // Calculate standard deviation manually for each day type
+      const stdevQuery = `
+        SELECT 
+          CASE 
+            WHEN day_of_week IN ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday') THEN 'Weekday'
+            ELSE 'Weekend'
+          END as day_type,
+          (bulkFTE + lumFTE + receiveFTE + inventoryFTE + supportFTE + rfidFTE + supervisorFTE + leaderFTE) as totalFTE
+        FROM labor_statistics
+      `;
+      
+      const allData = this.db.prepare(stdevQuery).all();
+      
+      // Calculate standard deviation for each day type and insert into summary table
+      const insertSummary = this.db.prepare(`
+        INSERT INTO labor_analysis_summary (
+          day_type, day_count, avg_bulkFTE, avg_lumFTE, avg_receiveFTE, 
+          avg_inventoryFTE, avg_supportFTE, avg_rfidFTE, avg_supervisorFTE, 
+          avg_leaderFTE, avg_totalFTE, stdev_totalFTE
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      
+      summaryStats.forEach((summary: any) => {
+        const dayTypeData = allData.filter((row: any) => row.day_type === summary.day_type);
+        const totalFTEs = dayTypeData.map((row: any) => row.totalFTE);
+        
+        let stdev = 0;
+        if (totalFTEs.length > 1) {
+          // Calculate mean
+          const mean = totalFTEs.reduce((sum, val) => sum + val, 0) / totalFTEs.length;
+          
+          // Calculate variance (using sample variance formula: divide by n-1)
+          const variance = totalFTEs.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / (totalFTEs.length - 1);
+          
+          // Calculate standard deviation
+          stdev = Math.sqrt(variance);
+        }
+        
+        insertSummary.run(
+          summary.day_type,
+          summary.day_count,
+          summary.avg_bulkFTE,
+          summary.avg_lumFTE,
+          summary.avg_receiveFTE,
+          summary.avg_inventoryFTE,
+          summary.avg_supportFTE,
+          summary.avg_rfidFTE,
+          summary.avg_supervisorFTE,
+          summary.avg_leaderFTE,
+          summary.avg_totalFTE,
+          stdev
+        );
+      });
+      
+      console.log('Labor analysis summary updated successfully');
+    } catch (error) {
+      console.error('Error updating labor analysis summary:', error);
+    }
   }
 
   // Get labor statistics for analysis
@@ -1016,6 +1145,16 @@ export class CCFDatabase {
     const query = `
       SELECT * FROM labor_statistics 
       ORDER BY date ASC
+    `;
+    
+    return this.db.prepare(query).all();
+  }
+
+  // Get pre-calculated labor analysis summary
+  public getLaborAnalysisSummary(): any[] {
+    const query = `
+      SELECT * FROM labor_analysis_summary 
+      ORDER BY day_type ASC
     `;
     
     return this.db.prepare(query).all();
