@@ -298,6 +298,8 @@ export class CCFDatabase {
     uniqueItems: number;
     uniquePONumbers: number;
     uniqueUNSPSC: number;
+    uniqueShipToLocations: number;
+    uniqueDestinationLocations: number;
     totalRecords: number;
   } {
     const uniqueEntities = this.db.prepare(`
@@ -320,6 +322,14 @@ export class CCFDatabase {
       SELECT COUNT(DISTINCT UNSPSC_Code) as count FROM purchase_orders WHERE UNSPSC_Code IS NOT NULL
     `).get() as { count: number };
 
+    const uniqueShipToLocations = this.db.prepare(`
+      SELECT COUNT(DISTINCT Ship_To) as count FROM purchase_orders WHERE Ship_To IS NOT NULL AND Ship_To != ''
+    `).get() as { count: number };
+
+    const uniqueDestinationLocations = this.db.prepare(`
+      SELECT COUNT(DISTINCT Destination_Location_Name) as count FROM purchase_orders WHERE Destination_Location_Name IS NOT NULL AND Destination_Location_Name != ''
+    `).get() as { count: number };
+
     const totalRecords = this.getRecordCount('purchase_orders');
 
     return {
@@ -328,6 +338,8 @@ export class CCFDatabase {
       uniqueItems: uniqueItems.count,
       uniquePONumbers: uniquePONumbers.count,
       uniqueUNSPSC: uniqueUNSPSC.count,
+      uniqueShipToLocations: uniqueShipToLocations.count,
+      uniqueDestinationLocations: uniqueDestinationLocations.count,
       totalRecords
     };
   }
@@ -363,6 +375,7 @@ export class CCFDatabase {
         AND PO_Date != ''
       GROUP BY Supplier_Name
       ORDER BY uniqueItemCount DESC
+      LIMIT 1000
     `;
     
     const result = this.db.prepare(query).all() as Array<{
@@ -429,6 +442,7 @@ export class CCFDatabase {
         AND PO_Date != ''
       GROUP BY Ship_To
       ORDER BY uniqueItemCount DESC
+      LIMIT 1000
     `;
     
     const result = this.db.prepare(query).all() as Array<{
@@ -464,7 +478,7 @@ export class CCFDatabase {
     });
   }
 
-  // Get item analysis data
+  // Get item analysis data (optimized for large datasets)
   public getItemAnalysis(): Array<{
     oracleItemNumber: string;
     itemDescription: string;
@@ -483,6 +497,7 @@ export class CCFDatabase {
     `;
     const totalUniqueDates = this.db.prepare(totalUniqueDatesQuery).get() as { totalUniqueDates: number };
     
+    // Optimized query without GROUP_CONCAT to avoid timeout on large datasets
     const query = `
       SELECT 
         Oracle_Item_Number as oracleItemNumber,
@@ -490,8 +505,8 @@ export class CCFDatabase {
         COUNT(*) as totalRecordCount,
         MIN(PO_Date) as startDate,
         MAX(PO_Date) as endDate,
-        GROUP_CONCAT(DISTINCT Supplier_Name) as suppliers,
-        GROUP_CONCAT(DISTINCT Ship_To) as shipToLocations
+        COUNT(DISTINCT Supplier_Name) as supplierCount,
+        COUNT(DISTINCT Ship_To) as shipToCount
       FROM purchase_orders 
       WHERE Oracle_Item_Number IS NOT NULL 
         AND Oracle_Item_Number != ''
@@ -501,6 +516,7 @@ export class CCFDatabase {
         AND PO_Date != ''
       GROUP BY Oracle_Item_Number, Item_Description
       ORDER BY totalRecordCount DESC
+      LIMIT 1000
     `;
     
     const result = this.db.prepare(query).all() as Array<{
@@ -509,8 +525,8 @@ export class CCFDatabase {
       totalRecordCount: number;
       startDate: string;
       endDate: string;
-      suppliers: string;
-      shipToLocations: string;
+      supplierCount: number;
+      shipToCount: number;
     }>;
     
     // Calculate average daily values: item records / total unique dates in dataset
@@ -523,19 +539,9 @@ export class CCFDatabase {
         ? Math.round((row.totalRecordCount / totalUniqueDates.totalUniqueDates) * 100) / 100 
         : 0;
       
-      const suppliers = row.suppliers ? row.suppliers.split(',') : [];
-      const shipToLocations = row.shipToLocations ? row.shipToLocations.split(',') : [];
-      
-      // Debug logging for first few items
-      if (result.indexOf(row) < 3) {
-        console.log('Item Analysis Debug:', {
-          oracleItemNumber: row.oracleItemNumber,
-          suppliers: suppliers,
-          shipToLocations: shipToLocations,
-          rawSuppliers: row.suppliers,
-          rawShipToLocations: row.shipToLocations
-        });
-      }
+      // For large datasets, we'll show counts instead of full lists to avoid performance issues
+      const suppliers = [`${row.supplierCount} suppliers`];
+      const shipToLocations = [`${row.shipToCount} locations`];
       
       return {
         oracleItemNumber: row.oracleItemNumber,
