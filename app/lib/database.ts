@@ -40,6 +40,9 @@ export class CCFDatabase {
     
     // Create indexes for performance
     this.createIndexes();
+    
+    // Initialize default variables
+    this.initializeDefaultVariables();
   }
 
   private createTables(): void {
@@ -109,6 +112,19 @@ export class CCFDatabase {
         rfidFTE REAL NOT NULL DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(date)
+      )
+    `);
+
+    // Analysis Variables table - persistent storage for all analysis variables
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS analysis_variables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        variable_name TEXT NOT NULL UNIQUE,
+        variable_value REAL NOT NULL,
+        variable_type TEXT NOT NULL DEFAULT 'number',
+        description TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -246,6 +262,12 @@ export class CCFDatabase {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_entity 
       ON purchase_orders(Entity)
+    `);
+    
+    // Index for Ship To analysis performance
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_ship_to_analysis 
+      ON purchase_orders(Ship_To, PO_Date, Destination_Location_Name, Oracle_Item_Number)
     `);
     
     this.db.exec(`
@@ -569,6 +591,7 @@ export class CCFDatabase {
     totalRecordCount: number;
     averageDailyValue: number;
     distinctDays: number;
+    uniqueDestinationCount: number;
     dateRange: { start: string; end: string; days: number };
   }> {
     // First, get the total number of unique PO dates in the entire dataset
@@ -620,6 +643,7 @@ export class CCFDatabase {
         totalRecordCount: row.totalRecordCount,
         averageDailyValue,
         distinctDays: totalUniqueDates.totalUniqueDates,
+        uniqueDestinationCount: 0, // Temporarily set to 0 to avoid expensive query
         dateRange: {
           start: row.startDate,
           end: row.endDate,
@@ -760,8 +784,41 @@ export class CCFDatabase {
 
   // Clear all data from database
   public clearDatabase(): void {
-    this.db.exec('DELETE FROM purchase_orders');
-    this.db.exec('DELETE FROM sqlite_sequence WHERE name = "purchase_orders"');
+    console.log('Clearing all database tables...');
+    
+    try {
+      // Clear all data tables (use IF EXISTS to avoid errors if tables don't exist)
+      this.db.exec('DELETE FROM purchase_orders');
+      console.log('Cleared purchase_orders table');
+    } catch (error) {
+      console.log('purchase_orders table may not exist or already empty');
+    }
+    
+    try {
+      this.db.exec('DELETE FROM labor_statistics');
+      console.log('Cleared labor_statistics table');
+    } catch (error) {
+      console.log('labor_statistics table may not exist or already empty');
+    }
+    
+    try {
+      this.db.exec('DELETE FROM labor_analysis_summary');
+      console.log('Cleared labor_analysis_summary table');
+    } catch (error) {
+      console.log('labor_analysis_summary table may not exist or already empty');
+    }
+    
+    // Reset auto-increment sequences
+    try {
+      this.db.exec('DELETE FROM sqlite_sequence WHERE name = "purchase_orders"');
+      this.db.exec('DELETE FROM sqlite_sequence WHERE name = "labor_statistics"');
+      this.db.exec('DELETE FROM sqlite_sequence WHERE name = "labor_analysis_summary"');
+      console.log('Reset auto-increment sequences');
+    } catch (error) {
+      console.log('Auto-increment sequences reset (may not exist)');
+    }
+    
+    console.log('All database tables cleared successfully');
   }
 
   // Recreate database with corrected schema
@@ -1342,6 +1399,85 @@ export class CCFDatabase {
         success: false, 
         message: error instanceof Error ? error.message : 'Unknown error' 
       };
+    }
+  }
+
+  // Save analysis variables to database
+  public saveAnalysisVariables(variables: Record<string, number>): { success: boolean; message: string } {
+    try {
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO analysis_variables (variable_name, variable_value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+      `);
+      
+      for (const [name, value] of Object.entries(variables)) {
+        stmt.run(name, value);
+      }
+      
+      return { success: true, message: 'Variables saved successfully' };
+    } catch (error) {
+      console.error('Error saving analysis variables:', error);
+      return { 
+        success: false, 
+        message: error instanceof Error ? error.message : 'Unknown error' 
+      };
+    }
+  }
+
+  // Get analysis variables from database
+  public getAnalysisVariables(): Record<string, number> {
+    try {
+      const query = 'SELECT variable_name, variable_value FROM analysis_variables';
+      const rows = this.db.prepare(query).all() as Array<{ variable_name: string; variable_value: number }>;
+      
+      const variables: Record<string, number> = {};
+      for (const row of rows) {
+        variables[row.variable_name] = row.variable_value;
+      }
+      
+      return variables;
+    } catch (error) {
+      console.error('Error getting analysis variables:', error);
+      return {};
+    }
+  }
+
+  // Initialize default variables if they don't exist
+  public initializeDefaultVariables(): void {
+    const defaultVariables = {
+      'targetStaffProductivityPerHour': 600,
+      'lumPicksPerHour': 80,
+      'bulkPicksPerHour': 40,
+      'receiptLinesProcessedPerHour': 15,
+      'putAwayLinesPerHour': 20,
+      'letDownLinesPerHour': 20,
+      'rfidLinesPerHour': 60,
+      'rfidLinesPerDay': 7400,
+      'ratioOfBulkPicksToLumPicks': 25,
+      'ratioOfReplenishLinesToPicks': 0.1,
+      'ratioOfReceiptLinesToPicks': 0.1,
+      'ratioOfPutLinesToPicks': 0.1,
+      'laborHoursPerDay': 8,
+      'utilizationPercentage': 80,
+      'linesPerSupportResource': 1000,
+      'staffToSupervisorRatio': 12,
+      'leadershipAndAdministrationStaff': 6,
+      'vacancyFactor': 12
+    };
+
+    // Check if variables already exist
+    const existingVariables = this.getAnalysisVariables();
+    
+    // Only insert variables that don't exist
+    const variablesToInsert: Record<string, number> = {};
+    for (const [name, value] of Object.entries(defaultVariables)) {
+      if (!(name in existingVariables)) {
+        variablesToInsert[name] = value;
+      }
+    }
+
+    if (Object.keys(variablesToInsert).length > 0) {
+      this.saveAnalysisVariables(variablesToInsert);
     }
   }
 

@@ -2,6 +2,8 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { Upload, X, CheckCircle, AlertCircle, FileSpreadsheet } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 interface ExcelFileUploadProps {
   onImportComplete?: (results: any[]) => void;
@@ -81,6 +83,18 @@ export default function Home() {
   const [laborStatsSortColumn, setLaborStatsSortColumn] = useState<string>('date');
   const [laborStatsSortDirection, setLaborStatsSortDirection] = useState<'asc' | 'desc'>('asc');
   
+  // Labor Statistics tab state
+  const [activeLaborTab, setActiveLaborTab] = useState<'table' | 'graph'>('table');
+  const [graphStartIndex, setGraphStartIndex] = useState(0);
+  
+  // Load labor statistics data when switching to graph tab
+  useEffect(() => {
+    if (activeLaborTab === 'graph' && laborStatsData.length === 0) {
+      console.log('Loading labor statistics data for graph...');
+      loadLaborStatsData();
+    }
+  }, [activeLaborTab]);
+  
   // System Variables state
   const [limitToCardinalHealth, setLimitToCardinalHealth] = useState<boolean>(false);
   
@@ -106,7 +120,8 @@ export default function Home() {
     utilizationPercentage: 80,
     leadershipAndAdministrationStaff: 6,
     staffToSupervisorRatio: 12,
-    laborHoursPerDay: 8
+    laborHoursPerDay: 8,
+    vacancyFactor: 12
   });
   
   // Table sorting state
@@ -119,32 +134,67 @@ export default function Home() {
   
   // Calculate subtotals
   const calculateSubtotals = (data: any[]) => {
-    if (!data || data.length === 0) return { totalUniqueItems: 0, totalRecords: 0, totalAverageDaily: 0 };
+    if (!data || data.length === 0) return { totalUniqueItems: 0, totalRecords: 0, totalAverageDaily: 0, totalUniqueDestinations: 0 };
     
     const totalUniqueItems = data.reduce((sum, item) => sum + (item.uniqueItemCount || 0), 0);
     const totalRecords = data.reduce((sum, item) => sum + (item.totalRecordCount || 0), 0);
     const totalAverageDaily = data.reduce((sum, item) => sum + (item.averageDailyValue || 0), 0);
+    const totalUniqueDestinations = data.reduce((sum, item) => sum + (item.uniqueDestinationCount || 0), 0);
     
     return {
       totalUniqueItems,
       totalRecords,
-      totalAverageDaily: Math.round(totalAverageDaily * 100) / 100
+      totalAverageDaily: Math.round(totalAverageDaily * 100) / 100,
+      totalUniqueDestinations
     };
   };
 
   // Handle productivity variable updates
-  const updateProductivityVariable = (key: string, value: number) => {
+  const updateProductivityVariable = async (key: string, value: number) => {
     setProductivityVariables(prev => ({
       ...prev,
       [key]: value
     }));
+    
+    // Save to database
+    await saveVariablesToDatabase();
   };
 
-  const updateLaborVariable = (key: string, value: number) => {
+  const updateLaborVariable = async (key: string, value: number) => {
     setLaborVariables(prev => ({
       ...prev,
       [key]: value
     }));
+    
+    // Save to database
+    await saveVariablesToDatabase();
+  };
+
+  // Save variables to database
+  const saveVariablesToDatabase = async () => {
+    try {
+      const allVariables = {
+        ...productivityVariables,
+        ...laborVariables
+      };
+      
+      const response = await fetch('/api/variables', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ variables: allVariables })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        if (!result.success) {
+          console.error('Error saving variables:', result.message);
+        }
+      }
+    } catch (error) {
+      console.error('Error saving variables to database:', error);
+    }
   };
 
   // Calculate points per transaction
@@ -164,6 +214,9 @@ export default function Home() {
   // Process simulation to generate labor statistics
   const processSimulation = async () => {
     setIsProcessingSimulation(true);
+    
+    // Save current variables to database before simulation
+    await saveVariablesToDatabase();
     
     // Debug: Log the variables being sent
     console.log('DEBUG: UI Variables being sent:');
@@ -194,7 +247,8 @@ export default function Home() {
             rfidLinesPerDay: productivityVariables.rfidLinesPerDay,
             rfidLinesPerHour: productivityVariables.rfidLinesPerHour,
             staffToSupervisorRatio: laborVariables.staffToSupervisorRatio,
-            leadershipAndAdministrationStaff: laborVariables.leadershipAndAdministrationStaff
+            leadershipAndAdministrationStaff: laborVariables.leadershipAndAdministrationStaff,
+            vacancyFactor: laborVariables.vacancyFactor
           }
         })
       });
@@ -205,6 +259,8 @@ export default function Home() {
         alert(`Process simulation completed successfully!\n\nProcessed ${result.data.processedDays} days with ${result.data.totalRecords} total records.`);
         // Reload transaction volumes data after simulation
         await loadTransactionVolumesData();
+        // Reload labor analysis data after simulation
+        await loadLaborStatsData();
       } else {
         console.error('Process simulation failed:', result.error);
         alert(`Process simulation failed: ${result.error}`);
@@ -289,17 +345,25 @@ export default function Home() {
 
   // Handle Ship To Location modal
   const handleShipToRowClick = async (shipToData: any) => {
+    console.log('Ship To row clicked:', shipToData);
     setSelectedShipToData(shipToData);
     setIsModalOpen(true);
     
     // Fetch detailed destination location data for this Ship To location
     try {
-      const response = await fetch(`/api/ship-to-details?shipTo=${encodeURIComponent(shipToData.shipToName)}`);
+      const url = `/api/ship-to-details?shipTo=${encodeURIComponent(shipToData.shipToName)}`;
+      console.log('Fetching ship to details from:', url);
+      
+      const response = await fetch(url);
+      console.log('Response status:', response.status);
+      
       if (response.ok) {
         const details = await response.json();
+        console.log('Ship to details received:', details);
         setModalDetails(details);
       } else {
-        console.error('Failed to fetch ship to details');
+        const errorText = await response.text();
+        console.error('Failed to fetch ship to details:', response.status, errorText);
         setModalDetails([]);
       }
     } catch (error) {
@@ -313,6 +377,201 @@ export default function Home() {
     setIsModalOpen(false);
     setSelectedShipToData(null);
     setModalDetails([]);
+  };
+
+  // Export Labor Analysis to PDF
+  const exportLaborAnalysisToPDF = () => {
+    if (!laborStatsData || laborStatsData.length === 0) {
+      alert('No labor analysis data available to export');
+      return;
+    }
+
+    const doc = new jsPDF('landscape', 'mm', 'a4');
+    
+    // Add title
+    doc.setFontSize(24);
+    doc.text('Labor Analysis Report', 20, 20);
+    
+    // Add date
+    doc.setFontSize(14);
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 20, 30);
+    
+    let yPosition = 50;
+    
+    // Add Transaction Summary Statistics
+    if (transactionVolumesSummary) {
+      doc.setFontSize(18);
+      doc.text('Transaction Summary Statistics', 20, yPosition);
+      yPosition += 10;
+      
+      const transactionData = [
+        ['Metric', 'Value'],
+        ['Total Days', transactionVolumesSummary.totalDays?.toString() || '0'],
+        ['Total Transaction Lines', (transactionVolumesSummary.totalTransactionLines || 0).toLocaleString()],
+        ['Average Lines Per Day', transactionVolumesSummary.averageLinesPerDay?.toString() || '0'],
+        ['Total Quantity Picked', (transactionVolumesSummary.totalQuantityPicked || 0).toLocaleString()],
+        ['Avg Lines Per Weekday', transactionVolumesSummary.averageLinesPerWeekday?.toString() || '0'],
+        ['Avg Lines Per Weekend', transactionVolumesSummary.averageLinesPerWeekend?.toString() || '0'],
+        ['Avg Points Per Weekday', Math.round(transactionVolumesSummary.averagePointsPerWeekday || 0).toLocaleString()],
+        ['Avg Points Per Weekend', Math.round(transactionVolumesSummary.averagePointsPerWeekend || 0).toLocaleString()]
+      ];
+      
+      autoTable(doc, {
+        startY: yPosition,
+        head: [transactionData[0]],
+        body: transactionData.slice(1),
+        theme: 'grid',
+        headStyles: { fillColor: [66, 139, 202] },
+        margin: { left: 20, right: 20 },
+        styles: { fontSize: 10 }
+      });
+      
+      yPosition = (doc as any).lastAutoTable.finalY + 20;
+    }
+    
+    // Add Analysis Variables
+    doc.setFontSize(18);
+    doc.text('Analysis Variables', 20, yPosition);
+    yPosition += 10;
+    
+    // Productivity Variables
+    const productivityData = [
+      ['Productivity Variables', 'Value'],
+      ['Target Staff Productivity Per Hour', productivityVariables.targetStaffProductivityPerHour?.toString() || '0'],
+      ['LUM Picks Per Hour', productivityVariables.lumPicksPerHour?.toString() || '0'],
+      ['Bulk Picks Per Hour', productivityVariables.bulkPicksPerHour?.toString() || '0'],
+      ['Receipt Lines Processed Per Hour', productivityVariables.receiptLinesProcessedPerHour?.toString() || '0'],
+      ['Put Away Lines Per Hour', productivityVariables.putAwayLinesPerHour?.toString() || '0'],
+      ['Let Down Lines Per Hour', productivityVariables.letDownLinesPerHour?.toString() || '0'],
+      ['RFID Lines Per Hour', productivityVariables.rfidLinesPerHour?.toString() || '0'],
+      ['RFID Lines Per Day', productivityVariables.rfidLinesPerDay?.toString() || '0'],
+      ['Lines Per Support Resource', productivityVariables.linesPerSupportResource?.toString() || '0'],
+      ['Ratio of Bulk Picks to LUM Picks', `${productivityVariables.ratioOfBulkPicksToLumPicks}%`],
+      ['Ratio of Receipt Lines to Picks', `${productivityVariables.ratioOfReceiptLinesToPicks}%`],
+      ['Ratio of Put Lines to Picks', `${productivityVariables.ratioOfPutLinesToPicks}%`],
+      ['Ratio of Replenish Lines to Picks', `${productivityVariables.ratioOfReplenishLinesToPicks}%`]
+    ];
+    
+    autoTable(doc, {
+      startY: yPosition,
+      head: [productivityData[0]],
+      body: productivityData.slice(1),
+      theme: 'grid',
+      headStyles: { fillColor: [66, 139, 202] },
+      margin: { left: 20, right: 20 },
+      styles: { fontSize: 10 }
+    });
+    
+    yPosition = (doc as any).lastAutoTable.finalY + 20;
+    
+    // Labor Variables
+    const laborData = [
+      ['Labor Variables', 'Value'],
+      ['Utilization Percentage', `${laborVariables.utilizationPercentage}%`],
+      ['Labor Hours Per Day', laborVariables.laborHoursPerDay?.toString() || '0'],
+      ['Staff to Supervisor Ratio', laborVariables.staffToSupervisorRatio?.toString() || '0'],
+      ['Leadership and Administration Staff', laborVariables.leadershipAndAdministrationStaff?.toString() || '0'],
+      ['Vacancy Factor', `${laborVariables.vacancyFactor}%`]
+    ];
+    
+    autoTable(doc, {
+      startY: yPosition,
+      head: [laborData[0]],
+      body: laborData.slice(1),
+      theme: 'grid',
+      headStyles: { fillColor: [66, 139, 202] },
+      margin: { left: 20, right: 20 },
+      styles: { fontSize: 10 }
+    });
+    
+    yPosition = (doc as any).lastAutoTable.finalY + 20;
+    
+    // Add summary statistics
+    if (laborStatsSummary && laborStatsSummary.length > 0) {
+      doc.setFontSize(18);
+      doc.text('Summary Statistics', 20, yPosition);
+      yPosition += 10;
+      laborStatsSummary.forEach((summary: any) => {
+        doc.setFontSize(14);
+        doc.text(`${summary.day_type} (${summary.day_count} days):`, 20, yPosition);
+        
+        // Create summary table
+        const summaryData = [
+          ['Metric', 'Average FTE'],
+          ['Bulk FTE', Math.round(summary.avg_bulkFTE || 0).toString()],
+          ['LUM FTE', Math.round(summary.avg_lumFTE || 0).toString()],
+          ['Receive FTE', Math.round(summary.avg_receiveFTE || 0).toString()],
+          ['Inventory FTE', Math.round(summary.avg_inventoryFTE || 0).toString()],
+          ['Support FTE', Math.round(summary.avg_supportFTE || 0).toString()],
+          ['RFID FTE', Math.round(summary.avg_rfidFTE || 0).toString()],
+          ['Supervisor FTE', Math.round(summary.avg_supervisorFTE || 0).toString()],
+          ['Leader FTE', Math.round(summary.avg_leaderFTE || 0).toString()],
+          ['Total FTE', Math.round(summary.avg_totalFTE || 0).toString()],
+          ['1σ Variation', `±${Math.round(summary.stdev_totalFTE || 0)} FTE`]
+        ];
+        
+        autoTable(doc, {
+          startY: yPosition + 5,
+          head: [summaryData[0]],
+          body: summaryData.slice(1),
+          theme: 'grid',
+          headStyles: { fillColor: [66, 139, 202] },
+          margin: { left: 20, right: 20 },
+          styles: { fontSize: 10 }
+        });
+        
+        yPosition = (doc as any).lastAutoTable.finalY + 20;
+      });
+    }
+    
+    // Add detailed labor statistics table
+    if (laborStatsData && laborStatsData.length > 0) {
+      doc.setFontSize(18);
+      doc.text('Daily Labor Statistics', 20, yPosition + 10);
+      
+      // Prepare table data
+      const tableData = laborStatsData.map((row: any) => [
+        row.date,
+        row.day_of_week,
+        row.transaction_lines.toString(),
+        Math.round(row.bulkFTE || 0).toString(),
+        Math.round(row.lumFTE || 0).toString(),
+        Math.round(row.receiveFTE || 0).toString(),
+        Math.round(row.inventoryFTE || 0).toString(),
+        Math.round(row.supportFTE || 0).toString(),
+        Math.round(row.rfidFTE || 0).toString(),
+        Math.round(row.supervisorFTE || 0).toString(),
+        Math.round(row.leaderFTE || 0).toString(),
+        Math.round((row.bulkFTE || 0) + (row.lumFTE || 0) + (row.receiveFTE || 0) + (row.inventoryFTE || 0) + (row.supportFTE || 0) + (row.rfidFTE || 0) + (row.supervisorFTE || 0) + (row.leaderFTE || 0)).toString()
+      ]);
+      
+      autoTable(doc, {
+        startY: yPosition + 20,
+        head: [['Date', 'Day', 'Lines', 'Bulk', 'LUM', 'Receive', 'Inventory', 'Support', 'RFID', 'Supervisor', 'Leader', 'Total']],
+        body: tableData,
+        theme: 'grid',
+        headStyles: { fillColor: [66, 139, 202] },
+        margin: { left: 20, right: 20 },
+        styles: { fontSize: 8 },
+        columnStyles: {
+          0: { cellWidth: 20 },
+          1: { cellWidth: 15 },
+          2: { cellWidth: 15 },
+          3: { cellWidth: 12 },
+          4: { cellWidth: 12 },
+          5: { cellWidth: 15 },
+          6: { cellWidth: 18 },
+          7: { cellWidth: 15 },
+          8: { cellWidth: 12 },
+          9: { cellWidth: 18 },
+          10: { cellWidth: 15 },
+          11: { cellWidth: 12 }
+        }
+      });
+    }
+    
+    // Save the PDF
+    doc.save('labor-analysis-report.pdf');
   };
 
   // Filter item data based on supplier and ship-to filters
@@ -548,6 +807,57 @@ export default function Home() {
     };
     
     checkExistingData();
+  }, []);
+
+  // Load variables from database on page load
+  useEffect(() => {
+    const loadVariablesFromDatabase = async () => {
+      try {
+        const response = await fetch('/api/variables');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.variables) {
+            console.log('Loading variables from database:', data.variables);
+            
+            // Update productivity variables
+            if (data.variables.targetStaffProductivityPerHour !== undefined) {
+              setProductivityVariables(prev => ({
+                ...prev,
+                targetStaffProductivityPerHour: data.variables.targetStaffProductivityPerHour,
+                lumPicksPerHour: data.variables.lumPicksPerHour || prev.lumPicksPerHour,
+                bulkPicksPerHour: data.variables.bulkPicksPerHour || prev.bulkPicksPerHour,
+                receiptLinesProcessedPerHour: data.variables.receiptLinesProcessedPerHour || prev.receiptLinesProcessedPerHour,
+                putAwayLinesPerHour: data.variables.putAwayLinesPerHour || prev.putAwayLinesPerHour,
+                letDownLinesPerHour: data.variables.letDownLinesPerHour || prev.letDownLinesPerHour,
+                rfidLinesPerHour: data.variables.rfidLinesPerHour || prev.rfidLinesPerHour,
+                rfidLinesPerDay: data.variables.rfidLinesPerDay || prev.rfidLinesPerDay,
+                ratioOfBulkPicksToLumPicks: data.variables.ratioOfBulkPicksToLumPicks || prev.ratioOfBulkPicksToLumPicks,
+                ratioOfReplenishLinesToPicks: data.variables.ratioOfReplenishLinesToPicks || prev.ratioOfReplenishLinesToPicks,
+                ratioOfReceiptLinesToPicks: data.variables.ratioOfReceiptLinesToPicks || prev.ratioOfReceiptLinesToPicks,
+                ratioOfPutLinesToPicks: data.variables.ratioOfPutLinesToPicks || prev.ratioOfPutLinesToPicks,
+                linesPerSupportResource: data.variables.linesPerSupportResource || prev.linesPerSupportResource
+              }));
+            }
+            
+            // Update labor variables
+            if (data.variables.laborHoursPerDay !== undefined) {
+              setLaborVariables(prev => ({
+                ...prev,
+                laborHoursPerDay: data.variables.laborHoursPerDay,
+                utilizationPercentage: data.variables.utilizationPercentage || prev.utilizationPercentage,
+                staffToSupervisorRatio: data.variables.staffToSupervisorRatio || prev.staffToSupervisorRatio,
+                leadershipAndAdministrationStaff: data.variables.leadershipAndAdministrationStaff || prev.leadershipAndAdministrationStaff,
+                vacancyFactor: data.variables.vacancyFactor || prev.vacancyFactor
+              }));
+            }
+          }
+        }
+      } catch (error) {
+        console.log('Error loading variables from database:', error);
+      }
+    };
+    
+    loadVariablesFromDatabase();
   }, []);
 
   // Load analysis data when analysis step is shown
@@ -915,7 +1225,7 @@ export default function Home() {
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="max-w-[1320px] mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-6">
             <div>
               <h1 className="text-3xl font-bold text-gray-900">CCF Analysis</h1>
@@ -1006,7 +1316,7 @@ export default function Home() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="max-w-[1320px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="space-y-8">
           {/* Step 1: File Upload */}
           {currentStep === 'upload' && (
@@ -1642,6 +1952,24 @@ export default function Home() {
             Number of hours staff work per day - default = 8
           </p>
         </div>
+
+        {/* Vacancy Factor */}
+        <div className="space-y-2">
+          <label className="block text-sm font-medium text-gray-700">
+            Vacancy Factor - %
+          </label>
+          <input
+            type="number"
+            value={laborVariables.vacancyFactor}
+            onChange={(e) => updateLaborVariable('vacancyFactor', parseInt(e.target.value) || 12)}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            min="0"
+            max="100"
+          />
+          <p className="text-xs text-gray-600">
+            Percentage of operational staffing impacted by POT, Holiday, FLMA, and Position Vacancies - default = 12%
+          </p>
+        </div>
       </div>
     </div>
 
@@ -1785,22 +2113,32 @@ export default function Home() {
                 </div>
 
                 {/* Process Simulation Button */}
-                <div className="flex justify-center mt-8">
+                <div className="bg-white rounded-lg shadow-sm border p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">Process Simulation</h3>
+                      <p className="text-sm text-gray-600">Generate labor statistics from purchase orders data</p>
+                    </div>
                   <button
-                    onClick={() => setCurrentStep('analysis')}
-                    className="px-12 py-4 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors inline-flex items-center text-xl font-medium"
-                  >
-                    <svg className="w-6 h-6 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                      onClick={processSimulation}
+                      disabled={isProcessingSimulation}
+                      className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center"
+                    >
+                      {isProcessingSimulation ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                     </svg>
                     Process Simulation
+                        </>
+                      )}
                   </button>
                 </div>
-
-                <div className="mt-6 text-center">
-                  <p className="text-lg text-gray-500">
-                    Click "Process Simulation" to proceed to the analysis view with the current analysis variables.
-                  </p>
                 </div>
               </div>
             </div>
@@ -2350,6 +2688,15 @@ export default function Home() {
                           </th>
                             <th 
                               className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                              onClick={() => handleShipToSort('uniqueDestinationCount')}
+                            >
+                              <div className="flex items-center space-x-1">
+                                <span>Unique Destinations</span>
+                                {getSortIcon('uniqueDestinationCount', shipToSortField, shipToSortDirection)}
+                              </div>
+                          </th>
+                            <th 
+                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                               onClick={() => handleShipToSort('totalRecordCount')}
                             >
                               <div className="flex items-center space-x-1">
@@ -2374,6 +2721,9 @@ export default function Home() {
                             </td>
                             <td className="px-6 py-2 text-sm font-semibold text-blue-800">
                               {calculateSubtotals(filteredShipToData).totalUniqueItems.toLocaleString()}
+                            </td>
+                            <td className="px-6 py-2 text-sm font-semibold text-blue-800">
+                              {calculateSubtotals(filteredShipToData).totalUniqueDestinations.toLocaleString()}
                             </td>
                             <td className="px-6 py-2 text-sm font-semibold text-blue-800">
                               {calculateSubtotals(filteredShipToData).totalRecords.toLocaleString()}
@@ -2415,6 +2765,11 @@ export default function Home() {
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                                 {shipTo.uniqueItemCount.toLocaleString()}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+                                {(shipTo.uniqueDestinationCount || 0).toLocaleString()}
                               </span>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -2662,7 +3017,7 @@ export default function Home() {
             <div className="px-6 py-4 max-h-[calc(90vh-120px)] overflow-auto">
               {modalDetails.length > 0 ? (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                     <div className="bg-blue-50 p-4 rounded-lg">
                       <h4 className="font-semibold text-blue-900">Total Records</h4>
                       <p className="text-2xl font-bold text-blue-700">{selectedShipToData?.totalRecordCount?.toLocaleString()}</p>
@@ -2670,6 +3025,10 @@ export default function Home() {
                     <div className="bg-green-50 p-4 rounded-lg">
                       <h4 className="font-semibold text-green-900">Unique Items</h4>
                       <p className="text-2xl font-bold text-green-700">{selectedShipToData?.uniqueItemCount?.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-orange-50 p-4 rounded-lg">
+                      <h4 className="font-semibold text-orange-900">Unique Destinations</h4>
+                      <p className="text-2xl font-bold text-orange-700">{selectedShipToData?.uniqueDestinationCount?.toLocaleString()}</p>
                     </div>
                     <div className="bg-purple-50 p-4 rounded-lg">
                       <h4 className="font-semibold text-purple-900">Avg Daily Value</h4>
@@ -2751,7 +3110,7 @@ export default function Home() {
 
           {/* Transaction Volumes Analysis Details */}
           {currentStep === 'transaction-volumes' && (
-            <div>
+            <div className="max-w-[1320px] mx-auto">
               {/* Back to Results Button */}
               <div className="mb-6 flex justify-start">
                 <button
@@ -2776,11 +3135,16 @@ export default function Home() {
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Transaction Volumes Analysis</h3>
           
           {/* Process Simulation Button */}
-          <div className="mb-6">
+          <div className="bg-white rounded-lg shadow-sm border p-4 mb-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Process Simulation</h3>
+                <p className="text-sm text-gray-600">Generate labor statistics from purchase orders data</p>
+              </div>
             <button
               onClick={processSimulation}
               disabled={isProcessingSimulation}
-              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center"
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center"
             >
               {isProcessingSimulation ? (
                 <>
@@ -2796,9 +3160,7 @@ export default function Home() {
                 </>
               )}
             </button>
-            <p className="text-sm text-gray-600 mt-2">
-              Generate daily labor statistics from the purchase orders data. This creates a summary table for faster analysis.
-            </p>
+            </div>
           </div>
 
                 {/* Summary Statistics */}
@@ -2854,7 +3216,7 @@ export default function Home() {
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                         {Object.entries(transactionVolumesSummary.dayOfWeekAverages).map(([day, average]) => (
                           <div key={day} className="bg-white rounded-lg p-3 text-center">
-                            <div className="text-lg font-bold text-blue-600">{average}</div>
+                            <div className="text-lg font-bold text-blue-600">{average as number}</div>
                             <div className="text-xs text-gray-600">{day}</div>
                           </div>
                         ))}
@@ -2949,12 +3311,27 @@ export default function Home() {
 
           {/* Labor Analysis Details */}
           {currentStep === 'labor-analysis' && (
+            <div className="space-y-6 max-w-[1320px] mx-auto">
+              {/* Header */}
+              <div className="flex items-center justify-between">
             <div>
-              {/* Back to Results Button */}
-              <div className="mb-6 flex justify-start">
+                  <h2 className="text-2xl font-bold text-gray-900">Labor Analysis</h2>
+                  <p className="text-gray-600">Workforce requirements and productivity analysis</p>
+                </div>
+                <div className="flex items-center space-x-3">
+                  <button
+                    onClick={exportLaborAnalysisToPDF}
+                    disabled={!laborStatsData || laborStatsData.length === 0}
+                    className="flex items-center px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Export PDF
+                  </button>
                 <button
                   onClick={() => setCurrentStep('analysis')}
-                  className="flex items-center justify-center px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                    className="flex items-center px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
                 >
                   <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
@@ -2962,23 +3339,19 @@ export default function Home() {
                   Back to Results
                 </button>
               </div>
-              
-              <div className="mb-6">
-                <h2 className="text-2xl font-bold text-gray-900 mb-2">Labor Analysis</h2>
-                <p className="text-gray-600">
-                  Analyze labor productivity and workforce requirements based on transaction volumes and productivity variables.
-                </p>
               </div>
-
-              <div className="bg-white rounded-lg shadow-lg p-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-4">Labor Analysis</h3>
                 
                 {/* Process Simulation Button */}
-                <div className="mb-6">
+              <div className="bg-white rounded-lg shadow-sm border p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900">Process Simulation</h3>
+                    <p className="text-sm text-gray-600">Generate labor statistics from purchase orders data</p>
+                  </div>
                   <button
                     onClick={processSimulation}
                     disabled={isProcessingSimulation}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center"
+                    className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center"
                   >
                     {isProcessingSimulation ? (
                       <>
@@ -2990,294 +3363,580 @@ export default function Home() {
                         <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                         </svg>
-                        Process Simulation
+                        Run Simulation
                       </>
                     )}
                   </button>
-                  <p className="text-sm text-gray-600 mt-2">
-                    Generate daily labor statistics from the purchase orders data. This creates a summary table for faster analysis.
-                  </p>
+                </div>
                 </div>
 
-                {/* Summary Statistics */}
+              {/* Transaction Volumes Summary */}
                 {transactionVolumesSummary && (
-                  <div className="bg-blue-50 rounded-lg p-6 mb-6">
-                    <h4 className="text-lg font-semibold text-blue-900 mb-4">Summary Statistics</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="bg-white rounded-lg p-4">
+                <div className="bg-white rounded-lg shadow-sm border">
+                  <div className="px-6 py-4 border-b border-gray-200">
+                    <h3 className="text-lg font-semibold text-gray-900">Transaction Summary Statistics</h3>
+                    <p className="text-sm text-gray-600">Overview of transaction volumes and daily averages</p>
+                  </div>
+                  <div className="p-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                      <div className="bg-gray-50 rounded-lg p-4">
                         <div className="text-2xl font-bold text-blue-600">{transactionVolumesSummary.totalDays}</div>
                         <div className="text-sm text-gray-600">Total Days</div>
                       </div>
-                      <div className="bg-white rounded-lg p-4">
+                      <div className="bg-gray-50 rounded-lg p-4">
                         <div className="text-2xl font-bold text-blue-600">{(transactionVolumesSummary.totalTransactionLines || 0).toLocaleString()}</div>
                         <div className="text-sm text-gray-600">Total Transaction Lines</div>
                       </div>
-                      <div className="bg-white rounded-lg p-4">
+                      <div className="bg-gray-50 rounded-lg p-4">
                         <div className="text-2xl font-bold text-blue-600">{transactionVolumesSummary.averageLinesPerDay}</div>
                         <div className="text-sm text-gray-600">Avg Lines Per Day</div>
                       </div>
-                      <div className="bg-white rounded-lg p-4">
+                      <div className="bg-gray-50 rounded-lg p-4">
                         <div className="text-2xl font-bold text-blue-600">{(transactionVolumesSummary.totalQuantityPicked || 0).toLocaleString()}</div>
                         <div className="text-sm text-gray-600">Total Quantity Picked</div>
                       </div>
                     </div>
                     
                     {/* Weekday/Weekend Averages */}
-                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="bg-white rounded-lg p-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                      <div className="bg-gray-50 rounded-lg p-4">
                         <div className="text-xl font-bold text-green-600">{transactionVolumesSummary.averageLinesPerWeekday}</div>
                         <div className="text-sm text-gray-600">Avg Lines Per Weekday</div>
                       </div>
-                      <div className="bg-white rounded-lg p-4">
+                      <div className="bg-gray-50 rounded-lg p-4">
                         <div className="text-xl font-bold text-orange-600">{transactionVolumesSummary.averageLinesPerWeekend}</div>
                         <div className="text-sm text-gray-600">Avg Lines Per Weekend</div>
                       </div>
                     </div>
 
                     {/* Average Points per Weekday/Weekend */}
-                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="bg-white rounded-lg p-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-gray-50 rounded-lg p-4">
                         <div className="text-xl font-bold text-green-600">{Math.round(transactionVolumesSummary.averagePointsPerWeekday || 0).toLocaleString()}</div>
                         <div className="text-sm text-gray-600">Avg Points Per Weekday</div>
                       </div>
-                      <div className="bg-white rounded-lg p-4">
+                      <div className="bg-gray-50 rounded-lg p-4">
                         <div className="text-xl font-bold text-orange-600">{Math.round(transactionVolumesSummary.averagePointsPerWeekend || 0).toLocaleString()}</div>
                         <div className="text-sm text-gray-600">Avg Points Per Weekend</div>
                       </div>
+                      </div>
                     </div>
                   </div>
                 )}
 
-                {/* Labor Analysis Table */}
-                {isLoadingLaborStats ? (
-                  <div className="text-center py-8">
+              {/* Analysis Variables Panel */}
+              <div className="bg-white rounded-lg shadow-sm border">
+                <div className="px-6 py-4 border-b border-gray-200">
+                  <h3 className="text-lg font-semibold text-gray-900">Analysis Variables</h3>
+                  <p className="text-sm text-gray-600">Current productivity and labor parameters</p>
+                </div>
+                <div className="p-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    {/* Productivity Variables */}
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <h4 className="text-md font-semibold text-gray-800 mb-4">Productivity Parameters</h4>
+                      <div className="space-y-3 text-sm">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Target Staff Productivity/Hour:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.targetStaffProductivityPerHour}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">LUM Picks/Hour:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.lumPicksPerHour}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Bulk Picks/Hour:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.bulkPicksPerHour}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Receipt Lines/Hour:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.receiptLinesProcessedPerHour}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Put Away Lines/Hour:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.putAwayLinesPerHour}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Let Down Lines/Hour:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.letDownLinesPerHour}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">RFID Lines/Hour:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.rfidLinesPerHour}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">RFID Lines/Day:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.rfidLinesPerDay}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Lines/Support Resource:</span>
+                          <span className="font-semibold text-blue-600">{productivityVariables.linesPerSupportResource}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Labor Variables */}
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <h4 className="text-md font-semibold text-gray-800 mb-4">Labor Parameters</h4>
+                      <div className="space-y-3 text-sm">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Utilization %:</span>
+                          <span className="font-semibold text-green-600">{laborVariables.utilizationPercentage}%</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Labor Hours/Day:</span>
+                          <span className="font-semibold text-green-600">{laborVariables.laborHoursPerDay}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Staff/Supervisor Ratio:</span>
+                          <span className="font-semibold text-green-600">{laborVariables.staffToSupervisorRatio}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Leadership Staff:</span>
+                          <span className="font-semibold text-green-600">{laborVariables.leadershipAndAdministrationStaff}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Vacancy Factor:</span>
+                          <span className="font-semibold text-green-600">{laborVariables.vacancyFactor}%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Ratio Parameters */}
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <h4 className="text-md font-semibold text-gray-800 mb-4">Ratio Parameters</h4>
+                      <div className="space-y-3 text-sm">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Bulk/LUM Pick Ratio:</span>
+                          <span className="font-semibold text-orange-600">{productivityVariables.ratioOfBulkPicksToLumPicks}%</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Receipt/Pick Ratio:</span>
+                          <span className="font-semibold text-orange-600">{productivityVariables.ratioOfReceiptLinesToPicks}%</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Put/Pick Ratio:</span>
+                          <span className="font-semibold text-orange-600">{productivityVariables.ratioOfPutLinesToPicks}%</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-600">Replenish/Pick Ratio:</span>
+                          <span className="font-semibold text-orange-600">{productivityVariables.ratioOfReplenishLinesToPicks}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* FTE Summary Statistics */}
+              {laborStatsSummary && laborStatsSummary.length > 0 && (
+                <div className="bg-white rounded-lg shadow-sm border">
+                  <div className="px-6 py-4 border-b border-gray-200">
+                    <h3 className="text-lg font-semibold text-gray-900">FTE Summary Statistics</h3>
+                    <p className="text-sm text-gray-600">Average workforce requirements by day type</p>
+                  </div>
+                  <div className="p-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      {laborStatsSummary.map((summary: any, index: number) => (
+                        <div key={index} className="bg-gray-50 rounded-lg p-4">
+                          <div className="flex items-center justify-between mb-4">
+                            <h4 className="font-semibold text-gray-800">{summary.day_type}</h4>
+                            <span className="text-sm text-gray-600">{summary.day_count} days</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3 text-sm">
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600">Bulk FTE:</span>
+                              <span className="font-semibold text-blue-600">{Math.round(summary.avg_bulkFTE || 0)}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600">LUM FTE:</span>
+                              <span className="font-semibold text-blue-600">{Math.round(summary.avg_lumFTE || 0)}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600">Receive FTE:</span>
+                              <span className="font-semibold text-blue-600">{Math.round(summary.avg_receiveFTE || 0)}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600">Inventory FTE:</span>
+                              <span className="font-semibold text-blue-600">{Math.round(summary.avg_inventoryFTE || 0)}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600">Support FTE:</span>
+                              <span className="font-semibold text-blue-600">{Math.round(summary.avg_supportFTE || 0)}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600">RFID FTE:</span>
+                              <span className="font-semibold text-blue-600">{Math.round(summary.avg_rfidFTE || 0)}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600">Supervisor FTE:</span>
+                              <span className="font-semibold text-green-600">{Math.round(summary.avg_supervisorFTE || 0)}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <span className="text-gray-600">Leader FTE:</span>
+                              <span className="font-semibold text-green-600">{Math.round(summary.avg_leaderFTE || 0)}</span>
+                            </div>
+                          </div>
+                          <div className="mt-4 pt-3 border-t border-gray-200">
+                            <div className="flex justify-between items-center">
+                              <span className="font-semibold text-gray-800">Total FTE:</span>
+                              <span className="text-lg font-bold text-blue-600">{Math.round(summary.avg_totalFTE || 0)}</span>
+                            </div>
+                            <div className="text-xs text-gray-600 mt-1">
+                              1σ Variation: ±{Math.round(summary.stdev_totalFTE || 0)} FTE
+                              <br />
+                              Range: {Math.round((summary.avg_totalFTE || 0) - (summary.stdev_totalFTE || 0))} - {Math.round((summary.avg_totalFTE || 0) + (summary.stdev_totalFTE || 0))}
+                            </div>
+                            <div className="mt-3 pt-3 border-t border-gray-300">
+                              <div className="flex justify-between items-center">
+                                <span className="font-semibold text-gray-800">Vacancy Factor Staffing Count:</span>
+                                <span className="text-lg font-bold text-purple-600">
+                                  {Math.round(((summary.avg_bulkFTE || 0) + (summary.avg_receiveFTE || 0) + (summary.avg_supportFTE || 0) + (summary.avg_lumFTE || 0) + (summary.avg_inventoryFTE || 0) + (summary.avg_rfidFTE || 0)) * (laborVariables.vacancyFactor / 100))}
+                                </span>
+                              </div>
+                              <div className="text-xs text-gray-600 mt-1">
+                                Additional staffing needed due to PTO, Holiday, FLMA, and Position Vacancies
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Labor Statistics Tabbed Container */}
+              {isLoadingLaborStats ? (
+                <div className="bg-white rounded-lg shadow-sm border p-8 text-center">
                     <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
                     <p className="mt-2 text-gray-600">Loading labor analysis...</p>
                   </div>
-                ) : laborStatsData.length > 0 ? (
-                  <div className="bg-white rounded-lg p-6">
-                    <h4 className="text-lg font-semibold text-gray-900 mb-4">Labor Statistics Table</h4>
-                    
-                    {/* Summary Statistics Header */}
-                    {laborStatsSummary && laborStatsOverall && (
-                      <div className="bg-gray-50 rounded-lg p-4 mb-6">
-                        <h5 className="text-md font-semibold text-gray-800 mb-3">Average FTE Requirements</h5>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                          {laborStatsSummary.map((summary: any, index: number) => (
-                            <div key={index} className="bg-white rounded-lg p-4">
-                              <h6 className="font-semibold text-gray-700 mb-2">
-                                {summary.day_type} ({summary.day_count} days)
-                              </h6>
-                              <div className="grid grid-cols-2 gap-2 text-sm">
-                                <div>Bulk FTE: <span className="font-semibold">{Math.round(summary.avg_bulkFTE || 0)}</span></div>
-                                <div>LUM FTE: <span className="font-semibold">{Math.round(summary.avg_lumFTE || 0)}</span></div>
-                                <div>Receive FTE: <span className="font-semibold">{Math.round(summary.avg_receiveFTE || 0)}</span></div>
-                                <div>Inventory FTE: <span className="font-semibold">{Math.round(summary.avg_inventoryFTE || 0)}</span></div>
-                                <div>Support FTE: <span className="font-semibold">{Math.round(summary.avg_supportFTE || 0)}</span></div>
-                                <div>RFID FTE: <span className="font-semibold">{Math.round(summary.avg_rfidFTE || 0)}</span></div>
-                                <div>Supervisor FTE: <span className="font-semibold">{Math.round(summary.avg_supervisorFTE || 0)}</span></div>
-                                <div>Leader FTE: <span className="font-semibold">{Math.round(summary.avg_leaderFTE || 0)}</span></div>
-                                <div className="col-span-2 border-t pt-2">
-                                  <div className="mb-1">
-                                    <strong>Total FTE: {Math.round(summary.avg_totalFTE || 0)}</strong>
-                                  </div>
-                       <div className="text-xs text-gray-600">
-                         1σ Variation: ±{Math.round(summary.stdev_totalFTE || 0)} FTE
-                         <br />
-                         Range: {Math.round((summary.avg_totalFTE || 0) - (summary.stdev_totalFTE || 0))} - {Math.round((summary.avg_totalFTE || 0) + (summary.stdev_totalFTE || 0))}
-                       </div>
-                                </div>
-                              </div>
+              ) : laborStatsData.length > 0 ? (
+                <div className="bg-white rounded-lg shadow-sm border">
+                  <div className="px-6 py-4 border-b border-gray-200">
+                    <h3 className="text-lg font-semibold text-gray-900">Daily Labor Statistics</h3>
+                    <p className="text-sm text-gray-600">Detailed FTE requirements by day</p>
+                  </div>
+                  
+                  {/* Tab Navigation */}
+                  <div className="border-b border-gray-200">
+                    <nav className="flex space-x-8 px-6" aria-label="Tabs">
+                      <button
+                        onClick={() => setActiveLaborTab('table')}
+                        className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                          activeLaborTab === 'table'
+                            ? 'border-blue-500 text-blue-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                        }`}
+                      >
+                        Table View
+                      </button>
+                      <button
+                        onClick={() => setActiveLaborTab('graph')}
+                        className={`py-4 px-1 border-b-2 font-medium text-sm ${
+                          activeLaborTab === 'graph'
+                            ? 'border-blue-500 text-blue-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                        }`}
+                      >
+                        Graph View
+                      </button>
+                    </nav>
+                  </div>
+                  
+                  {/* Tab Content */}
+                  {activeLaborTab === 'table' ? (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('date')}
+                          >
+                            <div className="flex items-center">
+                              Date
+                              {laborStatsSortColumn === 'date' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
                             </div>
-                          ))}
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('day_of_week')}
+                          >
+                            <div className="flex items-center">
+                              Day
+                              {laborStatsSortColumn === 'day_of_week' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('transaction_lines')}
+                          >
+                            <div className="flex items-center">
+                              Lines
+                              {laborStatsSortColumn === 'transaction_lines' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('bulkFTE')}
+                          >
+                            <div className="flex items-center">
+                              Bulk
+                              {laborStatsSortColumn === 'bulkFTE' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('lumFTE')}
+                          >
+                            <div className="flex items-center">
+                              LUM
+                              {laborStatsSortColumn === 'lumFTE' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('receiveFTE')}
+                          >
+                            <div className="flex items-center">
+                              Receive
+                              {laborStatsSortColumn === 'receiveFTE' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('inventoryFTE')}
+                          >
+                            <div className="flex items-center">
+                              Inventory
+                              {laborStatsSortColumn === 'inventoryFTE' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('supportFTE')}
+                          >
+                            <div className="flex items-center">
+                              Support
+                              {laborStatsSortColumn === 'supportFTE' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('rfidFTE')}
+                          >
+                            <div className="flex items-center">
+                              RFID
+                              {laborStatsSortColumn === 'rfidFTE' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('supervisorFTE')}
+                          >
+                            <div className="flex items-center">
+                              Supervisor
+                              {laborStatsSortColumn === 'supervisorFTE' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th 
+                            className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                            onClick={() => handleLaborStatsSort('leaderFTE')}
+                          >
+                            <div className="flex items-center">
+                              Leader
+                              {laborStatsSortColumn === 'leaderFTE' && (
+                                <span className="ml-1">
+                                  {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
+                                </span>
+                              )}
+                            </div>
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Total
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {sortedLaborStatsData.map((row: any, index: number) => {
+                          const totalFTE = (row.bulkFTE || 0) + (row.lumFTE || 0) + (row.receiveFTE || 0) + (row.inventoryFTE || 0) + (row.supportFTE || 0) + (row.rfidFTE || 0) + (row.supervisorFTE || 0) + (row.leaderFTE || 0);
+                          return (
+                            <tr key={index} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{row.date}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{row.day_of_week}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{row.transaction_lines}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{Math.round(row.bulkFTE || 0)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{Math.round(row.lumFTE || 0)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{Math.round(row.receiveFTE || 0)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{Math.round(row.inventoryFTE || 0)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{Math.round(row.supportFTE || 0)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{Math.round(row.rfidFTE || 0)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{Math.round(row.supervisorFTE || 0)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{Math.round(row.leaderFTE || 0)}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-gray-900">{Math.round(totalFTE)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  ) : (
+                    /* Graph Tab */
+                    <div className="p-6">
+                      <div className="mb-4 flex items-center justify-between">
+                        <h4 className="text-lg font-semibold text-gray-900">Total FTE Trend</h4>
+                        <div className="flex items-center space-x-4">
+                          <button
+                            onClick={() => setGraphStartIndex(Math.max(0, graphStartIndex - 1))}
+                            disabled={graphStartIndex === 0}
+                            className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            ← Previous
+                          </button>
+                          <span className="text-sm text-gray-600">
+                            {graphStartIndex + 1}-{Math.min(graphStartIndex + 60, sortedLaborStatsData.length)} of {sortedLaborStatsData.length}
+                          </span>
+                          <button
+                            onClick={() => setGraphStartIndex(Math.min(sortedLaborStatsData.length - 60, graphStartIndex + 1))}
+                            disabled={graphStartIndex >= sortedLaborStatsData.length - 60}
+                            className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Next →
+                          </button>
                         </div>
                       </div>
-                    )}
-
-                    {/* Detailed Labor Statistics Table */}
-                    <div className="overflow-x-auto">
-                      <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
-                          <tr>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('date')}
-                            >
-                              <div className="flex items-center">
-                                Date
-                                {laborStatsSortColumn === 'date' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
+                      
+                      <div className="bg-gray-50 rounded-lg p-4">
+                        {(() => {
+                          console.log('Graph Debug - sortedLaborStatsData:', sortedLaborStatsData?.length, 'laborStatsData:', laborStatsData?.length);
+                          console.log('Graph Debug - First few rows:', sortedLaborStatsData?.slice(0, 3));
+                          console.log('Graph Debug - Graph start index:', graphStartIndex);
+                          return null;
+                        })()}
+                        {sortedLaborStatsData && sortedLaborStatsData.length > 0 ? (
+                          <>
+                            <div className="h-96 flex items-end space-x-1">
+                              {sortedLaborStatsData.slice(graphStartIndex, graphStartIndex + 60).map((row: any, index: number) => {
+                                const totalFTE = (row.bulkFTE || 0) + (row.lumFTE || 0) + (row.receiveFTE || 0) + (row.inventoryFTE || 0) + (row.supportFTE || 0) + (row.rfidFTE || 0) + (row.supervisorFTE || 0) + (row.leaderFTE || 0);
+                                const currentSlice = sortedLaborStatsData.slice(graphStartIndex, graphStartIndex + 60);
+                                const maxFTE = Math.max(...currentSlice.map(r => 
+                                  (r.bulkFTE || 0) + (r.lumFTE || 0) + (r.receiveFTE || 0) + (r.inventoryFTE || 0) + (r.supportFTE || 0) + (r.rfidFTE || 0) + (r.supervisorFTE || 0) + (r.leaderFTE || 0)
+                                ));
+                                const height = maxFTE > 0 ? (totalFTE / maxFTE) * 100 : 0;
+                                
+                                // Debug logging for first few bars
+                                if (index < 3) {
+                                  console.log(`Graph Bar ${index}:`, {
+                                    date: row.date,
+                                    totalFTE,
+                                    maxFTE,
+                                    height,
+                                    rowData: {
+                                      bulkFTE: row.bulkFTE,
+                                      lumFTE: row.lumFTE,
+                                      receiveFTE: row.receiveFTE,
+                                      inventoryFTE: row.inventoryFTE,
+                                      supportFTE: row.supportFTE,
+                                      rfidFTE: row.rfidFTE,
+                                      supervisorFTE: row.supervisorFTE,
+                                      leaderFTE: row.leaderFTE
+                                    }
+                                  });
+                                }
+                                
+                                return (
+                                  <div key={index} className="flex flex-col items-center flex-1">
+                                    <div 
+                                      className="bg-blue-500 w-full rounded-t hover:bg-blue-600 transition-colors cursor-pointer"
+                                      style={{ height: `${Math.max(height, 2)}%` }}
+                                      title={`${row.date}: ${Math.round(totalFTE)} FTE`}
+                                    />
+                                    {index % 10 === 0 && (
+                                      <div className="text-xs text-gray-500 mt-1 transform -rotate-45 origin-left">
+                                        {new Date(row.date).toLocaleDateString()}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div className="mt-4 flex justify-between text-sm text-gray-600">
+                              <span>Date Range: {sortedLaborStatsData[graphStartIndex]?.date ? new Date(sortedLaborStatsData[graphStartIndex].date).toLocaleDateString() : 'N/A'} - {sortedLaborStatsData[Math.min(graphStartIndex + 59, sortedLaborStatsData.length - 1)]?.date ? new Date(sortedLaborStatsData[Math.min(graphStartIndex + 59, sortedLaborStatsData.length - 1)].date).toLocaleDateString() : 'N/A'}</span>
+                              <span>Total FTE Range: {(() => {
+                                const currentSlice = sortedLaborStatsData.slice(graphStartIndex, graphStartIndex + 60);
+                                const values = currentSlice.map(r => 
+                                  (r.bulkFTE || 0) + (r.lumFTE || 0) + (r.receiveFTE || 0) + (r.inventoryFTE || 0) + (r.supportFTE || 0) + (r.rfidFTE || 0) + (r.supervisorFTE || 0) + (r.leaderFTE || 0)
+                                );
+                                return values.length > 0 ? `${Math.round(Math.min(...values))} - ${Math.round(Math.max(...values))}` : 'N/A';
+                              })()}</span>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="h-96 flex items-center justify-center">
+                            <div className="text-center">
+                              <p className="text-gray-500 text-lg">No data available</p>
+                              <p className="text-gray-400 text-sm mt-2">Please run the process simulation first to generate labor statistics data.</p>
+                              <div className="mt-4 text-xs text-gray-400">
+                                <p>Debug Info:</p>
+                                <p>sortedLaborStatsData length: {sortedLaborStatsData?.length || 0}</p>
+                                <p>laborStatsData length: {laborStatsData?.length || 0}</p>
+                                <p>isLoadingLaborStats: {isLoadingLaborStats ? 'true' : 'false'}</p>
                               </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('day_of_week')}
-                            >
-                              <div className="flex items-center">
-                                Day
-                                {laborStatsSortColumn === 'day_of_week' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('transaction_lines')}
-                            >
-                              <div className="flex items-center">
-                                Transaction Lines
-                                {laborStatsSortColumn === 'transaction_lines' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('bulkFTE')}
-                            >
-                              <div className="flex items-center">
-                                Bulk FTE
-                                {laborStatsSortColumn === 'bulkFTE' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('lumFTE')}
-                            >
-                              <div className="flex items-center">
-                                LUM FTE
-                                {laborStatsSortColumn === 'lumFTE' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('receiveFTE')}
-                            >
-                              <div className="flex items-center">
-                                Receive FTE
-                                {laborStatsSortColumn === 'receiveFTE' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('inventoryFTE')}
-                            >
-                              <div className="flex items-center">
-                                Inventory FTE
-                                {laborStatsSortColumn === 'inventoryFTE' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('supportFTE')}
-                            >
-                              <div className="flex items-center">
-                                Support FTE
-                                {laborStatsSortColumn === 'supportFTE' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('rfidFTE')}
-                            >
-                              <div className="flex items-center">
-                                RFID FTE
-                                {laborStatsSortColumn === 'rfidFTE' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('supervisorFTE')}
-                            >
-                              <div className="flex items-center">
-                                Supervisor FTE
-                                {laborStatsSortColumn === 'supervisorFTE' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th 
-                              className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                              onClick={() => handleLaborStatsSort('leaderFTE')}
-                            >
-                              <div className="flex items-center">
-                                Leader FTE
-                                {laborStatsSortColumn === 'leaderFTE' && (
-                                  <span className="ml-1">
-                                    {laborStatsSortDirection === 'asc' ? '↑' : '↓'}
-                                  </span>
-                                )}
-                              </div>
-                            </th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                              Total FTE
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                          {sortedLaborStatsData.map((row: any, index: number) => {
-                            const totalFTE = (row.bulkFTE || 0) + (row.lumFTE || 0) + (row.receiveFTE || 0) + (row.inventoryFTE || 0) + (row.supportFTE || 0) + (row.rfidFTE || 0) + (row.supervisorFTE || 0) + (row.leaderFTE || 0);
-                            return (
-                              <tr key={index} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{row.date}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{row.day_of_week}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{row.transaction_lines?.toLocaleString()}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.bulkFTE || 0)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.lumFTE || 0)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.receiveFTE || 0)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.inventoryFTE || 0)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.supportFTE || 0)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.rfidFTE || 0)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.supervisorFTE || 0)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{Math.round(row.leaderFTE || 0)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">{Math.round(totalFTE)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <div className="bg-white rounded-lg p-6">
+                  )}
+                </div>
+              ) : (
+                <div className="bg-white rounded-lg shadow-sm border p-6">
                     <h4 className="text-lg font-semibold text-gray-900 mb-4">Labor Analysis Table</h4>
-                    <p className="text-gray-600">No labor statistics data available. Please run the process simulation first.</p>
+                  <p className="text-gray-600">No labor statistics data available. Please run the process simulation first.</p>
                   </div>
                 )}
-              </div>
             </div>
           )}
 

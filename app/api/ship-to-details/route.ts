@@ -6,7 +6,10 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const shipTo = searchParams.get('shipTo');
     
+    console.log('Ship To Details API called with shipTo:', shipTo);
+    
     if (!shipTo) {
+      console.log('No shipTo parameter provided');
       return NextResponse.json({
         success: false,
         error: 'Ship To parameter is required'
@@ -14,6 +17,7 @@ export async function GET(request: NextRequest) {
     }
 
     const database = getDatabase();
+    console.log('Database instance obtained');
     
     // First, get the total number of unique PO dates in the entire dataset for average calculation
     const totalUniqueDatesQuery = `
@@ -41,6 +45,7 @@ export async function GET(request: NextRequest) {
       ORDER BY recordCount DESC
     `;
     
+    console.log('Executing query for shipTo:', shipTo);
     const result = database.db.prepare(query).all(shipTo) as Array<{
       destinationLocationName: string;
       recordCount: number;
@@ -48,6 +53,13 @@ export async function GET(request: NextRequest) {
       startDate: string;
       endDate: string;
     }>;
+    
+    console.log('Query result:', result.length, 'records found');
+    if (result.length > 0) {
+      console.log('Sample result:', result[0]);
+    } else {
+      console.log('No destination locations found for shipTo:', shipTo);
+    }
     
     // Calculate average daily values for each destination location
     const resultWithAverages = result.map(row => ({
@@ -57,6 +69,7 @@ export async function GET(request: NextRequest) {
         : 0
     }));
     
+    console.log('Final result with averages:', resultWithAverages.length, 'records');
     return NextResponse.json(resultWithAverages);
   } catch (error) {
     console.error('Ship To Details API error:', error);
